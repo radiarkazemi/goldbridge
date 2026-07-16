@@ -48,12 +48,12 @@ SOURCE_UTOKEN = (_session or {}).get("utoken") or os.getenv("BRIDGE_SOURCE_UTOKE
 # want before relying on it; change via env if it's a different id.
 TARGET_PRICE_ID = int(os.getenv("BRIDGE_TARGET_PRICE_ID", "1"))
 
-# Deliberately conservative - this hits an endpoint authenticated as
-# someone else's account. Polling too aggressively risks that account
-# getting flagged/rate-limited by the platform, which would break this
-# for everyone. 20s is already faster than most retail price boards
-# update visually.
-POLL_SECONDS = int(os.getenv("BRIDGE_POLL_SECONDS", "20"))
+# Deliberately conservative by default - this hits an endpoint authenticated
+# as someone else's account. Polling too aggressively risks that account
+# getting flagged/rate-limited by the platform. Set to 2s to match the
+# source's own update cadence; override via BRIDGE_POLL_SECONDS if it
+# starts getting rate-limited or flagged.
+POLL_SECONDS = int(os.getenv("BRIDGE_POLL_SECONDS", "2"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -64,6 +64,46 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="goldbridge (private, internal use only)", lifespan=lifespan)
 
 _latest = {"buy": None, "sell": None, "updated_at": None, "source_updated_at": None}
+_latest_list: list[dict] = []
+
+
+def clean_entry(entry: dict) -> dict:
+    """
+    Reduce one raw source entry down to the fields actually useful for
+    picking a price, applying the same customer-buy/customer-sell
+    derivation used in extract_buy_sell (see note there for the
+    assumption behind it).
+    """
+    base = entry.get("price")
+    price_buy_offset = entry.get("priceBuy")
+    price_sell_offset = entry.get("priceSell")
+
+    customer_buy = customer_sell = None
+    if base is not None and price_buy_offset is not None and price_sell_offset is not None:
+        customer_buy = float(base + price_sell_offset)
+        customer_sell = float(base + price_buy_offset)
+
+    return {
+        "id": entry.get("id"),
+        "name": entry.get("name"),
+        "type": entry.get("type"),          # 1 = gold by gram/ayar, 2 = coin (سکه)
+        "ayar": entry.get("ayar"),
+        "item_weight": entry.get("itemWeight"),
+        "active": bool(entry.get("isActive")),
+        "allow_buy": bool(entry.get("allowBuy")),
+        "allow_sell": bool(entry.get("allowSell")),
+        "base_price": base,
+        "buy": customer_buy,
+        "sell": customer_sell,
+        "min": entry.get("min"),
+        "max": entry.get("max"),
+        "last_update_time": entry.get("lastUpdateTime"),
+    }
+
+
+def clean_prices(payload: dict) -> list[dict]:
+    entries = payload.get("prices") or []
+    return [clean_entry(e) for e in entries]
 
 
 def extract_buy_sell(payload: dict, price_id: int) -> tuple[float, float] | None:
@@ -122,6 +162,17 @@ async def poll_loop():
                     else:
                         logger.warning(f"[goldbridge] source returned state=false: {msg}")
                 else:
+                    global _latest_list
+                    new_list = clean_prices(payload)
+                    logger.info(f"[goldbridge] source returned {len(new_list)} price entries")
+                    if len(new_list) >= len(_latest_list):
+                        _latest_list = new_list
+                    else:
+                        logger.warning(
+                            f"[goldbridge] source returned fewer entries than cached "
+                            f"({len(new_list)} < {len(_latest_list)}) - keeping previous list"
+                        )
+
                     result = extract_buy_sell(payload, TARGET_PRICE_ID)
                     if result is None:
                         logger.warning(f"[goldbridge] couldn't find/parse price id={TARGET_PRICE_ID}")
@@ -139,11 +190,45 @@ async def poll_loop():
             await asyncio.sleep(POLL_SECONDS)
 
 
+@app.get("/prices")
+async def get_prices():
+    """
+    Full cleaned list of every price entry from the source, refreshed
+    every poll cycle. Use this to see what's available and pick an id
+    to pass to /price?id=.
+    """
+    if not _latest_list:
+        raise HTTPException(status_code=503, detail="No prices fetched yet")
+    return {"prices": _latest_list, "source_updated_at": _latest["source_updated_at"]}
+
+
 @app.get("/price")
-async def get_price():
-    if _latest["buy"] is None:
-        raise HTTPException(status_code=503, detail="No price fetched yet")
-    return _latest
+async def get_price(id: int | None = None):
+    """
+    Default (no ?id=): the pre-computed buy/sell for BRIDGE_TARGET_PRICE_ID
+    (kept for backwards compatibility with the main app's price source).
+
+    With ?id=N: buy/sell computed on the fly for that entry from the
+    latest cached list - lets you pick any item without restarting
+    goldbridge or touching .env.
+    """
+    if id is None:
+        if _latest["buy"] is None:
+            raise HTTPException(status_code=503, detail="No price fetched yet")
+        return _latest
+
+    entry = next((p for p in _latest_list if p["id"] == id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No price entry with id={id}")
+    if entry["buy"] is None or entry["sell"] is None:
+        raise HTTPException(status_code=422, detail=f"Price entry id={id} has no computable buy/sell")
+    return {
+        "buy": entry["buy"],
+        "sell": entry["sell"],
+        "name": entry["name"],
+        "updated_at": _latest["updated_at"],
+        "source_updated_at": entry["last_update_time"],
+    }
 
 
 @app.get("/health")
