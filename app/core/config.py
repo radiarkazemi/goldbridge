@@ -19,12 +19,16 @@ class Settings:
 
     # --- Behavior ---
     target_price_id: int = int(os.getenv("BRIDGE_TARGET_PRICE_ID", "1"))
-    # Default 1s. Short/partial catalogs from sekefarshad are merged by
-    # id (see price_cache.record_entries), so we can stay this fast
-    # without freezing secondary cards. Going much below ~0.5s tends to
-    # amplify truncated responses without buying real freshness - the
-    # source's own lastUpdateTime is second-granularity.
-    poll_seconds: float = float(os.getenv("BRIDGE_POLL_SECONDS", "1"))
+    # Default 0.5s to match typical gold_abshd consumer poll. Short/partial
+    # catalogs are merged by id (see price_cache.record_entries), so this
+    # stays safe for secondary cards. Going much below ~0.35–0.5s tends to
+    # amplify truncated responses / 429s without buying real freshness -
+    # the source's own lastUpdateTime is second-granularity.
+    poll_seconds: float = float(os.getenv("BRIDGE_POLL_SECONDS", "0.5"))
+    # Brief faster cadence right after a primary quote change so the next
+    # move is caught quickly, then settle back to poll_seconds.
+    poll_fast_seconds: float = float(os.getenv("BRIDGE_POLL_FAST_SECONDS", "0.35"))
+    poll_fast_window_seconds: float = float(os.getenv("BRIDGE_POLL_FAST_WINDOW_SECONDS", "3"))
     max_stale_polls: int = int(os.getenv("BRIDGE_MAX_STALE_POLLS", "5"))
     max_backoff_seconds: float = float(os.getenv("BRIDGE_MAX_BACKOFF_SECONDS", "60"))
 

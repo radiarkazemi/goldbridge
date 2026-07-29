@@ -2,6 +2,10 @@
 Background task: polls sekefarshad.ir on a timer, feeds results into
 the shared PriceCache. Exponential backoff with jitter on failure so a
 source outage doesn't turn into a hammering retry loop.
+
+Primary (id=target) freshness is the priority: every successful tick is
+applied immediately. Full-catalog retries for secondary cards never
+block applying the primary quote from the first response.
 """
 import asyncio
 import random
@@ -44,45 +48,8 @@ async def _fetch_payload(client: httpx.AsyncClient) -> dict:
     return resp.json()
 
 
-async def _poll_once(client: httpx.AsyncClient, *, force_full_retry: bool = False) -> None:
-    payload = await _fetch_payload(client)
-
-    if not payload.get("state"):
-        msg = payload.get("msg") or ""
-        if any(k.lower() in msg.lower() for k in _AUTH_ERROR_KEYWORDS):
-            logger.error(
-                f"[poller] session looks expired/invalid ({msg}) - "
-                f"run `python login.py` again to get a fresh session"
-            )
-        else:
-            logger.warning(f"[poller] source returned state=false: {msg}")
-        cache.record_failure()
-        return
-
-    new_entries = clean_prices(payload)
-
-    # Only retry for a full catalog on a slow cadence. Immediate retries
-    # on every short tick double upstream load and delay applying the
-    # fresh primary quote that short responses usually carry.
-    if (
-        force_full_retry
-        and 0 < len(new_entries) < _MIN_HEALTHY_ENTRY_COUNT
-        and len(cache.entries) >= _MIN_HEALTHY_ENTRY_COUNT
-    ):
-        await asyncio.sleep(0.25)
-        try:
-            retry_payload = await _fetch_payload(client)
-            if retry_payload.get("state"):
-                retry_entries = clean_prices(retry_payload)
-                if len(retry_entries) > len(new_entries):
-                    payload = retry_payload
-                    new_entries = retry_entries
-                    logger.info(
-                        f"[poller] full-catalog refresh recovered {len(new_entries)} entries"
-                    )
-        except Exception as e:
-            logger.warning(f"[poller] full-catalog refresh failed: {e}")
-
+def _apply_tick(payload: dict, new_entries: list[dict]) -> bool:
+    """Merge catalog + update primary quote. Returns True if buy/sell changed."""
     merge_result = cache.record_entries(new_entries)
     if merge_result == "merged":
         logger.debug(
@@ -102,10 +69,10 @@ async def _poll_once(client: httpx.AsyncClient, *, force_full_retry: bool = Fals
             cache.record_success(
                 buy, sell, payload.get("lastUpdateTime") or cached.get("last_update_time")
             )
-            return
+            return False
         logger.warning(f"[poller] couldn't find/parse price id={settings.target_price_id}")
         cache.record_failure()
-        return
+        return False
 
     buy, sell = result
     changed = buy != cache.latest_buy or sell != cache.latest_sell
@@ -116,14 +83,69 @@ async def _poll_once(client: httpx.AsyncClient, *, force_full_retry: bool = Fals
             f"[poller] updated: buy={buy} sell={sell} "
             f"(entries={len(cache.entries)}, tick={len(new_entries)})"
         )
+    return changed
 
 
-def _backoff_seconds() -> float:
+async def _poll_once(client: httpx.AsyncClient, *, force_full_retry: bool = False) -> bool:
+    """One upstream poll. Returns True if the primary quote changed."""
+    payload = await _fetch_payload(client)
+
+    if not payload.get("state"):
+        msg = payload.get("msg") or ""
+        if any(k.lower() in msg.lower() for k in _AUTH_ERROR_KEYWORDS):
+            logger.error(
+                f"[poller] session looks expired/invalid ({msg}) - "
+                f"run `python login.py` again to get a fresh session"
+            )
+        else:
+            logger.warning(f"[poller] source returned state=false: {msg}")
+        cache.record_failure()
+        return False
+
+    new_entries = clean_prices(payload)
+
+    # Apply the first response immediately so id=1 never waits on a
+    # full-catalog chase. Secondary completeness is best-effort after.
+    changed = _apply_tick(payload, new_entries)
+
+    if (
+        force_full_retry
+        and 0 < len(new_entries) < _MIN_HEALTHY_ENTRY_COUNT
+        and len(cache.entries) >= _MIN_HEALTHY_ENTRY_COUNT
+    ):
+        await asyncio.sleep(0.25)
+        try:
+            retry_payload = await _fetch_payload(client)
+            if retry_payload.get("state"):
+                retry_entries = clean_prices(retry_payload)
+                if len(retry_entries) > len(new_entries):
+                    logger.info(
+                        f"[poller] full-catalog refresh recovered {len(retry_entries)} entries"
+                    )
+                    # Merge longer catalog; may also refresh primary if present.
+                    if _apply_tick(retry_payload, retry_entries):
+                        changed = True
+        except Exception as e:
+            logger.warning(f"[poller] full-catalog refresh failed: {e}")
+
+    return changed
+
+
+def _backoff_seconds(base_interval: float) -> float:
     if cache.consecutive_failures == 0:
-        return settings.poll_seconds
-    raw = settings.poll_seconds * (2 ** min(cache.consecutive_failures, 6))
+        return base_interval
+    raw = base_interval * (2 ** min(cache.consecutive_failures, 6))
     capped = min(settings.max_backoff_seconds, raw)
     return capped * (0.8 + 0.4 * random.random())  # +/-20% jitter
+
+
+def _interval_after_tick(*, changed: bool, fast_until: float, now: float) -> tuple[float, float]:
+    """Pick next sleep base; extend a short fast window when price moves."""
+    if changed:
+        fast_until = now + settings.poll_fast_window_seconds
+    if now < fast_until:
+        return min(settings.poll_seconds, settings.poll_fast_seconds), fast_until
+    return settings.poll_seconds, fast_until
 
 
 async def poll_loop() -> None:
@@ -136,12 +158,16 @@ async def poll_loop() -> None:
         )
 
     last_full_refresh = 0.0
-    async with httpx.AsyncClient(timeout=10) as client:
+    fast_until = 0.0
+    # Fail hung connects quickly; keep enough read budget for the source.
+    timeout = httpx.Timeout(connect=2.0, read=5.0, write=5.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         while True:
             started = time.monotonic()
             force_full = (started - last_full_refresh) >= _FULL_CATALOG_REFRESH_SECONDS
+            changed = False
             try:
-                await _poll_once(client, force_full_retry=force_full)
+                changed = await _poll_once(client, force_full_retry=force_full)
                 if force_full:
                     last_full_refresh = time.monotonic()
             except Exception as e:
@@ -155,7 +181,11 @@ async def poll_loop() -> None:
                         f"marking cached prices as stale"
                     )
 
+            now = time.monotonic()
+            base_interval, fast_until = _interval_after_tick(
+                changed=changed, fast_until=fast_until, now=now
+            )
             # Account for request time so the effective interval stays
-            # close to BRIDGE_POLL_SECONDS instead of (poll + RTT).
-            elapsed = time.monotonic() - started
-            await asyncio.sleep(max(0.0, _backoff_seconds() - elapsed))
+            # close to the chosen poll period instead of (poll + RTT).
+            elapsed = now - started
+            await asyncio.sleep(max(0.0, _backoff_seconds(base_interval) - elapsed))
