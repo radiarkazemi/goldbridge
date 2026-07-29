@@ -108,11 +108,10 @@ async def _poll_once(client: httpx.AsyncClient, *, force_full_retry: bool = Fals
     # full-catalog chase. Secondary completeness is best-effort after.
     changed = _apply_tick(payload, new_entries)
 
-    if (
-        force_full_retry
-        and 0 < len(new_entries) < _MIN_HEALTHY_ENTRY_COUNT
-        and len(cache.entries) >= _MIN_HEALTHY_ENTRY_COUNT
-    ):
+    # On the slow full-catalog cadence, if this tick was truncated, try
+    # once more for secondary cards. Also covers cold start (empty cache
+    # + partial first tick) so /prices is not stuck at a single row.
+    if force_full_retry and 0 < len(new_entries) < _MIN_HEALTHY_ENTRY_COUNT:
         await asyncio.sleep(0.25)
         try:
             retry_payload = await _fetch_payload(client)
@@ -122,7 +121,6 @@ async def _poll_once(client: httpx.AsyncClient, *, force_full_retry: bool = Fals
                     logger.info(
                         f"[poller] full-catalog refresh recovered {len(retry_entries)} entries"
                     )
-                    # Merge longer catalog; may also refresh primary if present.
                     if _apply_tick(retry_payload, retry_entries):
                         changed = True
         except Exception as e:
