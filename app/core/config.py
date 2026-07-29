@@ -19,10 +19,12 @@ class Settings:
 
     # --- Behavior ---
     target_price_id: int = int(os.getenv("BRIDGE_TARGET_PRICE_ID", "1"))
-    # Default 2s - 1s hammers sekefarshad hard enough that it often
-    # returns a truncated 1-item catalog. 2s stays fresh while keeping
-    # full-list responses reliable.
-    poll_seconds: float = float(os.getenv("BRIDGE_POLL_SECONDS", "2"))
+    # Default 1s. Short/partial catalogs from sekefarshad are merged by
+    # id (see price_cache.record_entries), so we can stay this fast
+    # without freezing secondary cards. Going much below ~0.5s tends to
+    # amplify truncated responses without buying real freshness - the
+    # source's own lastUpdateTime is second-granularity.
+    poll_seconds: float = float(os.getenv("BRIDGE_POLL_SECONDS", "1"))
     max_stale_polls: int = int(os.getenv("BRIDGE_MAX_STALE_POLLS", "5"))
     max_backoff_seconds: float = float(os.getenv("BRIDGE_MAX_BACKOFF_SECONDS", "60"))
 
