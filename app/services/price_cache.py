@@ -29,15 +29,77 @@ class PriceCache:
         self.source_updated_at = source_updated_at
         self.consecutive_failures = 0
 
-    def record_entries(self, new_entries: list[dict]) -> bool:
-        """Only replaces the cached list if it's at least as complete as
-        what's already cached - protects against a flaky short response
-        from the source silently dropping entries. Returns True if the
-        cache was updated."""
-        if len(new_entries) >= len(self.entries):
-            self.entries = new_entries
-            return True
-        return False
+    def record_entries(self, new_entries: list[dict]) -> str:
+        """Apply a cleaned source list into the cache.
+
+        The upstream API sometimes rate-limits / truncates and returns
+        only 1 entry instead of the full catalog. Blindly replacing the
+        cache with that short list (or refusing to update at all) leaves
+        secondary cards stale. Strategy:
+          - empty -> no-op ("empty")
+          - first fill OR full/equal-length list -> replace ("replaced")
+          - shorter partial list -> merge by id, keeping other cards ("merged")
+
+        Returns one of: "empty" | "replaced" | "merged".
+        """
+        if not new_entries:
+            return "empty"
+
+        if not self.entries or len(new_entries) >= len(self.entries):
+            self.entries = list(new_entries)
+            return "replaced"
+
+        by_id = {e["id"]: dict(e) for e in self.entries if e.get("id") is not None}
+        for e in new_entries:
+            eid = e.get("id")
+            if eid is None:
+                continue
+            by_id[eid] = dict(e)
+
+        ordered: list[dict] = []
+        seen: set = set()
+        for e in self.entries:
+            eid = e.get("id")
+            if eid in by_id and eid not in seen:
+                ordered.append(by_id[eid])
+                seen.add(eid)
+        for e in new_entries:
+            eid = e.get("id")
+            if eid is not None and eid not in seen:
+                ordered.append(dict(e))
+                seen.add(eid)
+
+        self.entries = ordered
+        return "merged"
+
+    def sync_target_quote(self, price_id: int, buy: float, sell: float, source_updated_at: str | None):
+        """Keep the matching /prices row in sync with /price's target quote
+        even when the source only returned that one row this tick."""
+        for entry in self.entries:
+            if entry.get("id") == price_id:
+                entry["buy"] = buy
+                entry["sell"] = sell
+                if source_updated_at:
+                    entry["last_update_time"] = source_updated_at
+                return
+        # Target not in list yet (boot / never saw a full catalog) - add a
+        # minimal row so /prices isn't empty of the primary instrument.
+        self.entries.append({
+            "id": price_id,
+            "name": None,
+            "type": None,
+            "ayar": None,
+            "item_weight": None,
+            "active": True,
+            "allow_buy": True,
+            "allow_sell": True,
+            "base_price": None,
+            "buy": buy,
+            "sell": sell,
+            "min": None,
+            "max": None,
+            "last_update_time": source_updated_at,
+        })
 
     def record_failure(self):
         self.consecutive_failures += 1
