@@ -37,7 +37,10 @@ class Settings:
     # goldapp side exactly. Blank => /price and /prices are UNAUTHENTICATED
     # (dev-only; a startup warning is logged in that case).
     api_key: str = os.getenv("BRIDGE_API_KEY", "")
-    rate_limit_per_minute: int = int(os.getenv("BRIDGE_RATE_LIMIT_PER_MINUTE", "120"))
+    # Default is generous: gold_abshd polls both /price and /prices about
+    # every 0.5s from 127.0.0.1 (~240 req/min). A 120 cap causes 429s and
+    # makes the UI feel laggy even when the upstream poller is healthy.
+    rate_limit_per_minute: int = int(os.getenv("BRIDGE_RATE_LIMIT_PER_MINUTE", "600"))
 
     # --- Server ---
     host: str = os.getenv("BRIDGE_HOST", "127.0.0.1")
