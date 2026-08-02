@@ -9,24 +9,22 @@ def derive_customer_buy_sell(
     base,
     price_buy_offset,
     price_sell_offset,
-    profit=None,
+    *,
+    price_diff=None,
+    profit_diff=None,
 ) -> tuple[float, float] | None:
     """
     Derive customer-facing buy/sell (Rial) from one source row.
 
-    Live trading rows usually set priceBuy/priceSell as offsets from
-    ``price`` (priceBuy is often negative). From the customer's point
-    of view (بخرید / بفروشید):
+    When live offsets are present (priceBuy / priceSell not both 0):
         customer-buy  = price + priceSell
         customer-sell = price + priceBuy
 
-    When the source clears both offsets to 0 (common when the bot is
-    idle / inactive), those fields no longer carry the spread - the
-    configured ``profit`` margin does. Fall back to:
-        customer-buy  = price + profit
-        customer-sell = price - profit
-
-    If offsets and profit are all zero/missing, buy == sell == price.
+    When both offsets are 0, sekefarshad still shows a two-sided quote
+    from the configured diffs (before any app-side commission):
+        margin        = (profitDiff + priceDiff) * 10
+        customer-buy  = price + margin
+        customer-sell = price - margin
     """
     if base is None:
         return None
@@ -36,10 +34,10 @@ def derive_customer_buy_sell(
     ps = 0.0 if price_sell_offset is None else float(price_sell_offset)
 
     if pb == 0.0 and ps == 0.0:
-        margin = 0.0 if profit is None else float(profit)
-        if margin != 0.0:
-            return base_f + margin, base_f - margin
-        return base_f, base_f
+        pdiff = 0.0 if price_diff is None else float(price_diff)
+        prof_diff = 0.0 if profit_diff is None else float(profit_diff)
+        margin = (prof_diff + pdiff) * 10.0
+        return base_f + margin, base_f - margin
 
     return base_f + ps, base_f + pb
 
@@ -54,7 +52,8 @@ def clean_entry(entry: dict) -> dict:
         entry.get("price"),
         entry.get("priceBuy"),
         entry.get("priceSell"),
-        entry.get("profit"),
+        price_diff=entry.get("priceDiff"),
+        profit_diff=entry.get("profitDiff"),
     )
     customer_buy = customer_sell = None
     if result is not None:
@@ -93,5 +92,6 @@ def extract_buy_sell(payload: dict, price_id: int) -> tuple[float, float] | None
         entry.get("price"),
         entry.get("priceBuy"),
         entry.get("priceSell"),
-        entry.get("profit"),
+        price_diff=entry.get("priceDiff"),
+        profit_diff=entry.get("profitDiff"),
     )
