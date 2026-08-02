@@ -3,7 +3,6 @@ Pure functions that turn the raw sekefarshad.ir payload into the
 shapes goldbridge exposes. No I/O, no state - kept separate from
 price_cache.py so the parsing logic is independently testable.
 """
-from app.core.config import get_settings
 
 # Source JSON prices are Rial. 1 toman = 10 Rial.
 _RIAL_PER_TOMAN = 10
@@ -60,6 +59,7 @@ def derive_customer_buy_sell(
 
     buy, sell = screen
     if shop_margin_toman is None:
+        from app.core.config import get_settings
         shop_margin_toman = get_settings().shop_margin_toman
     margin_rial = float(shop_margin_toman) * _RIAL_PER_TOMAN
     return buy + margin_rial, sell - margin_rial
