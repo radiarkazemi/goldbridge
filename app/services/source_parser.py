@@ -4,22 +4,82 @@ shapes goldbridge exposes. No I/O, no state - kept separate from
 price_cache.py so the parsing logic is independently testable.
 """
 
+# Source JSON prices are Rial. 1 toman = 10 Rial.
+_RIAL_PER_TOMAN = 10
+
+
+def farshad_screen_buy_sell(
+    base,
+    price_buy_offset,
+    price_sell_offset,
+    profit=None,
+) -> tuple[float, float] | None:
+    """
+    Reproduce the buy/sell Farshad shows on screen from one JSON row.
+
+    Live offsets (when not both 0):
+        بخرید  = price + priceSell
+        بفروشید = price + priceBuy
+
+    When priceBuy and priceSell are both 0, Farshad uses ``profit``:
+        بخرید  = price + profit
+        بفروشید = price - profit
+    (Confirmed against the Farshad app UI for id=1009.)
+    """
+    if base is None:
+        return None
+
+    base_f = float(base)
+    pb = 0.0 if price_buy_offset is None else float(price_buy_offset)
+    ps = 0.0 if price_sell_offset is None else float(price_sell_offset)
+
+    if pb == 0.0 and ps == 0.0:
+        margin = 0.0 if profit is None else float(profit)
+        return base_f + margin, base_f - margin
+
+    return base_f + ps, base_f + pb
+
+
+def derive_customer_buy_sell(
+    base,
+    price_buy_offset,
+    price_sell_offset,
+    profit=None,
+    shop_margin_toman: float | None = None,
+) -> tuple[float, float] | None:
+    """
+    Goldbridge pre-commission quote = Farshad on-screen quote, then
+    nudge buy up / sell down by the configured shop margin (toman).
+    """
+    screen = farshad_screen_buy_sell(
+        base, price_buy_offset, price_sell_offset, profit=profit
+    )
+    if screen is None:
+        return None
+
+    buy, sell = screen
+    if shop_margin_toman is None:
+        from app.core.config import get_settings
+        shop_margin_toman = get_settings().shop_margin_toman
+    margin_rial = float(shop_margin_toman) * _RIAL_PER_TOMAN
+    return buy + margin_rial, sell - margin_rial
+
 
 def clean_entry(entry: dict) -> dict:
     """
     Reduce one raw source entry down to the fields actually useful for
     picking a price, applying the same customer-buy/customer-sell
-    derivation used in extract_buy_sell (see note there for the
-    assumption behind it).
+    derivation used in extract_buy_sell.
     """
-    base = entry.get("price")
-    price_buy_offset = entry.get("priceBuy")
-    price_sell_offset = entry.get("priceSell")
-
+    result = derive_customer_buy_sell(
+        entry.get("price"),
+        entry.get("priceBuy"),
+        entry.get("priceSell"),
+        profit=entry.get("profit"),
+    )
     customer_buy = customer_sell = None
-    if base is not None and price_buy_offset is not None and price_sell_offset is not None:
-        customer_buy = float(base + price_sell_offset)
-        customer_sell = float(base + price_buy_offset)
+    if result is not None:
+        customer_buy, customer_sell = result
 
     return {
         "id": entry.get("id"),
@@ -30,7 +90,7 @@ def clean_entry(entry: dict) -> dict:
         "active": bool(entry.get("isActive")),
         "allow_buy": bool(entry.get("allowBuy")),
         "allow_sell": bool(entry.get("allowSell")),
-        "base_price": base,
+        "base_price": entry.get("price"),
         "buy": customer_buy,
         "sell": customer_sell,
         "min": entry.get("min"),
@@ -45,30 +105,14 @@ def clean_prices(payload: dict) -> list[dict]:
 
 
 def extract_buy_sell(payload: dict, price_id: int) -> tuple[float, float] | None:
-    """
-    Finds the target price entry and derives buy/sell.
-
-    ASSUMPTION (verify against the real product before trusting this in
-    production): the source's own "priceBuy"/"priceSell" fields are
-    offsets from "price", and from the *customer's* point of view
-    (matching the "بخرید"/"بفروشید" labels shown in the product's own
-    UI) the mapping is:
-        customer-buy  (our buy_price)  = price + priceSell
-        customer-sell (our sell_price) = price + priceBuy
-    This looked right against the one sample data point available at
-    build time (see README.md) but has NOT been confirmed live.
-    """
+    """Finds the target price entry and derives buy/sell."""
     entries = payload.get("prices") or []
     entry = next((p for p in entries if p.get("id") == price_id), None)
     if not entry:
         return None
-
-    base = entry.get("price")
-    price_buy_offset = entry.get("priceBuy")
-    price_sell_offset = entry.get("priceSell")
-    if base is None or price_buy_offset is None or price_sell_offset is None:
-        return None
-
-    customer_buy = base + price_sell_offset
-    customer_sell = base + price_buy_offset
-    return float(customer_buy), float(customer_sell)
+    return derive_customer_buy_sell(
+        entry.get("price"),
+        entry.get("priceBuy"),
+        entry.get("priceSell"),
+        profit=entry.get("profit"),
+    )
