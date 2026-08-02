@@ -3,28 +3,29 @@ Pure functions that turn the raw sekefarshad.ir payload into the
 shapes goldbridge exposes. No I/O, no state - kept separate from
 price_cache.py so the parsing logic is independently testable.
 """
+from app.core.config import get_settings
+
+# Source JSON prices are Rial. 1 toman = 10 Rial.
+_RIAL_PER_TOMAN = 10
 
 
-def derive_customer_buy_sell(
+def farshad_screen_buy_sell(
     base,
     price_buy_offset,
     price_sell_offset,
-    *,
-    price_diff=None,
-    profit_diff=None,
+    profit=None,
 ) -> tuple[float, float] | None:
     """
-    Derive customer-facing buy/sell (Rial) from one source row.
+    Reproduce the buy/sell Farshad shows on screen from one JSON row.
 
-    When live offsets are present (priceBuy / priceSell not both 0):
-        customer-buy  = price + priceSell
-        customer-sell = price + priceBuy
+    Live offsets (when not both 0):
+        بخرید  = price + priceSell
+        بفروشید = price + priceBuy
 
-    When both offsets are 0, sekefarshad still shows a two-sided quote
-    from the configured diffs (before any app-side commission):
-        margin        = (profitDiff + priceDiff) * 10
-        customer-buy  = price + margin
-        customer-sell = price - margin
+    When priceBuy and priceSell are both 0, Farshad uses ``profit``:
+        بخرید  = price + profit
+        بفروشید = price - profit
+    (Confirmed against the Farshad app UI for id=1009.)
     """
     if base is None:
         return None
@@ -34,12 +35,34 @@ def derive_customer_buy_sell(
     ps = 0.0 if price_sell_offset is None else float(price_sell_offset)
 
     if pb == 0.0 and ps == 0.0:
-        pdiff = 0.0 if price_diff is None else float(price_diff)
-        prof_diff = 0.0 if profit_diff is None else float(profit_diff)
-        margin = (prof_diff + pdiff) * 10.0
+        margin = 0.0 if profit is None else float(profit)
         return base_f + margin, base_f - margin
 
     return base_f + ps, base_f + pb
+
+
+def derive_customer_buy_sell(
+    base,
+    price_buy_offset,
+    price_sell_offset,
+    profit=None,
+    shop_margin_toman: float | None = None,
+) -> tuple[float, float] | None:
+    """
+    Goldbridge pre-commission quote = Farshad on-screen quote, then
+    nudge buy up / sell down by the configured shop margin (toman).
+    """
+    screen = farshad_screen_buy_sell(
+        base, price_buy_offset, price_sell_offset, profit=profit
+    )
+    if screen is None:
+        return None
+
+    buy, sell = screen
+    if shop_margin_toman is None:
+        shop_margin_toman = get_settings().shop_margin_toman
+    margin_rial = float(shop_margin_toman) * _RIAL_PER_TOMAN
+    return buy + margin_rial, sell - margin_rial
 
 
 def clean_entry(entry: dict) -> dict:
@@ -52,8 +75,7 @@ def clean_entry(entry: dict) -> dict:
         entry.get("price"),
         entry.get("priceBuy"),
         entry.get("priceSell"),
-        price_diff=entry.get("priceDiff"),
-        profit_diff=entry.get("profitDiff"),
+        profit=entry.get("profit"),
     )
     customer_buy = customer_sell = None
     if result is not None:
@@ -92,6 +114,5 @@ def extract_buy_sell(payload: dict, price_id: int) -> tuple[float, float] | None
         entry.get("price"),
         entry.get("priceBuy"),
         entry.get("priceSell"),
-        price_diff=entry.get("priceDiff"),
-        profit_diff=entry.get("profitDiff"),
+        profit=entry.get("profit"),
     )

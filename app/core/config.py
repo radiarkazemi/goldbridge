@@ -31,6 +31,9 @@ class Settings:
     poll_fast_window_seconds: float = float(os.getenv("BRIDGE_POLL_FAST_WINDOW_SECONDS", "3"))
     max_stale_polls: int = int(os.getenv("BRIDGE_MAX_STALE_POLLS", "5"))
     max_backoff_seconds: float = float(os.getenv("BRIDGE_MAX_BACKOFF_SECONDS", "60"))
+    # After matching Farshad's on-screen buy/sell, nudge our pre-commission
+    # quote: buy += this many toman, sell -= this many toman (1 toman = 10 Rial).
+    shop_margin_toman: float = float(os.getenv("BRIDGE_SHOP_MARGIN_TOMAN", "10000"))
 
     # --- Security ---
     # Any long random string; must match GOLDAPP_PRICE_API_KEY on the
