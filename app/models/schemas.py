@@ -16,9 +16,9 @@ class PriceEntry(BaseModel):
     active: bool = Field(..., description="Whether the source currently has this item active.")
     allow_buy: bool = Field(..., description="Whether the source currently allows buying this item.")
     allow_sell: bool = Field(..., description="Whether the source currently allows selling this item.")
-    base_price: float | None = Field(None, description="Raw base price from the source, before buy/sell offsets.")
-    buy: float | None = Field(None, description="Derived customer-buy price (see README for the offset formula).")
-    sell: float | None = Field(None, description="Derived customer-sell price (see README for the offset formula).")
+    base_price: float | None = Field(None, description="Raw mid price from the source (`price`). On-screen buy/sell are this ± profit.")
+    buy: float | None = Field(None, description="Farshad on-screen customer-buy (بخرید) = price + profit + masterProfit.")
+    sell: float | None = Field(None, description="Farshad on-screen customer-sell (بفروشید) = price - profit - masterProfit.")
     min: float | None = Field(None, description="Minimum transactable quantity for this item.")
     max: float | None = Field(None, description="Maximum transactable quantity for this item.")
     last_update_time: str | None = Field(None, description="Source's own last-updated timestamp for this item.")
@@ -36,7 +36,7 @@ class PricesResponse(BaseModel):
                     {
                         "id": 1, "name": "نقد شنبه", "type": 1, "ayar": 750, "item_weight": 0,
                         "active": True, "allow_buy": True, "allow_sell": True,
-                        "base_price": 788600000, "buy": 789250000.0, "sell": 787850000.0,
+                        "base_price": 1045200000, "buy": 1045900000.0, "sell": 1044500000.0,
                         "min": 1, "max": 5000, "last_update_time": "2026-07-16 17:07:18",
                     }
                 ],
@@ -48,8 +48,8 @@ class PricesResponse(BaseModel):
 
 
 class PriceResponse(BaseModel):
-    buy: float = Field(..., description="Customer-buy price in Rial.")
-    sell: float = Field(..., description="Customer-sell price in Rial.")
+    buy: float = Field(..., description="Farshad on-screen customer-buy (بخرید) in Rial: price + profit + masterProfit.")
+    sell: float = Field(..., description="Farshad on-screen customer-sell (بفروشید) in Rial: price - profit - masterProfit.")
     name: str | None = Field(None, description="Item name, present when queried with ?id=.")
     updated_at: str | None = Field(None, description="When goldbridge itself last refreshed this value (UTC ISO 8601).")
     source_updated_at: str | None = Field(None, description="Source's own last-updated timestamp.")
@@ -58,8 +58,8 @@ class PriceResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "buy": 789250000.0,
-                "sell": 787850000.0,
+                "buy": 1045900000.0,
+                "sell": 1044500000.0,
                 "name": "نقد شنبه",
                 "updated_at": "2026-07-17T12:00:00+00:00",
                 "source_updated_at": "2026-07-16 17:07:18",

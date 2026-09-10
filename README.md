@@ -9,18 +9,31 @@ plain local JSON endpoint that your main app can read.
 separate project on purpose - keep it that way (see "Keeping this
 confidential" below).
 
-## ⚠️ Before you trust this in production
+## Price formula (must match Farshad's own app)
 
-The price formula in `extract_buy_sell()` (in `main.py`) is my best
-read of the one sample response you shared, cross-checked against the
-بخرید/بفروشید numbers in your screenshot at a different point in time -
-it matched the *pattern* (buy > sell, right rough magnitude) but I
-could not verify it against a live, simultaneous side-by-side
-comparison. **Before switching your main app over to this source**, run
-`goldbridge` for a few minutes and compare its `/price` output
-side-by-side against what `sekefarshad.ir`'s own web UI is showing at
-the exact same moment. If the numbers don't match, the fix is entirely
-inside `extract_buy_sell()` - it's a ~15 line function.
+Farshad's trade board does **not** display `priceBuy` / `priceSell`.
+Those fields are bot live-offsets (and sometimes admin-side snapshots).
+The on-screen بخرید / بفروشید numbers come from `price ± profit`
+(plus `masterProfit`), confirmed in sekefarshad.ir's own frontend
+(`mp` / `gp` / `vp` in `/static/js/main.4ad7f49b.js`):
+
+```
+customer-buy  (بخرید)  = price + profit + masterProfit
+customer-sell (بفروشید) = price - profit - masterProfit
+```
+
+The old goldbridge formula (`price + priceSell` / `price + priceBuy`)
+is why `/price` sometimes disagreed with the app:
+
+- when both offsets were `0` (the usual idle payload), goldbridge
+  returned a flat mid-price while the app still showed `price ± profit`
+- when offsets were non-zero they were often a *different* spread than
+  `profit` (e.g. ±500k offset vs ±700k profit)
+
+`extract_buy_sell()` / `clean_entry()` now follow the app formula.
+A remaining caveat: Farshad then adds a per-user `diff` from
+`/userPrices` on top of the board quote. Goldbridge matches the board
+a user with `diff=0` sees.
 
 ## Setup
 
