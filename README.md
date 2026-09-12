@@ -9,18 +9,122 @@ plain local JSON endpoint that your main app can read.
 separate project on purpose - keep it that way (see "Keeping this
 confidential" below).
 
-## ⚠️ Before you trust this in production
+## Price formula (must match Farshad's own app)
 
-The price formula in `extract_buy_sell()` (in `main.py`) is my best
-read of the one sample response you shared, cross-checked against the
-بخرید/بفروشید numbers in your screenshot at a different point in time -
-it matched the *pattern* (buy > sell, right rough magnitude) but I
-could not verify it against a live, simultaneous side-by-side
-comparison. **Before switching your main app over to this source**, run
-`goldbridge` for a few minutes and compare its `/price` output
-side-by-side against what `sekefarshad.ir`'s own web UI is showing at
-the exact same moment. If the numbers don't match, the fix is entirely
-inside `extract_buy_sell()` - it's a ~15 line function.
+Farshad's trade board does **not** display `priceBuy` / `priceSell`.
+Those fields are bot live-offsets (and sometimes admin-side snapshots).
+The on-screen بخرید / بفروشید numbers come from `price ± profit`
+(plus `masterProfit`), confirmed in sekefarshad.ir's own frontend
+(`mp` / `gp` / `vp` in `/static/js/main.4ad7f49b.js`):
+
+```
+customer-buy  (بخرید)  = price + profit + masterProfit
+customer-sell (بفروشید) = price - profit - masterProfit
+```
+
+The old goldbridge formula (`price + priceSell` / `price + priceBuy`)
+is why `/price` sometimes disagreed with the app:
+
+- when both offsets were `0` (the usual idle payload), goldbridge
+  returned a flat mid-price while the app still showed `price ± profit`
+- when offsets were non-zero they were often a *different* spread than
+  `profit` (e.g. ±500k offset vs ±700k profit)
+
+`extract_buy_sell()` / `clean_entry()` now follow the app formula.
+A remaining caveat: Farshad then adds a per-user `diff` from
+`/userPrices` on top of the board quote. Goldbridge matches the board
+a user with `diff=0` sees.
+
+## Matching the Farshad /trade screen (id=1 vs نقدی …)
+
+Farshad's trade board does **not** show `id=1`. `id=1` is the inactive
+master (`نقد یکشنبه`, `isActive=0`, `profit=300000`). The green/red
+tiles are the **نقدی** children:
+
+| Farshad tile | list.php id | related_id | profit (Rial) | UI spread (Toman) |
+|---|---|---|---|---|
+| نقد یکشنبه (master, hidden) | 1 | — | 300,000 | ±30,000 |
+| نقدی یکشنبه (on /trade) | 1013 | 1 | 700,000 | ±70,000 |
+| نقدی دوشنبه (on /trade) | 1009 | 7 | 700,000 | ±70,000 |
+| نقدی کارتخوان (on /trade) | 1014 | 1 | 700,000 | ±70,000 (+ live offsets) |
+
+Worked example from a simultaneous screenshot + `list.php` dump:
+
+- Farshad **نقدی دوشنبه** showed 104,410,000 / 104,270,000 Toman
+- `id=1009`: `price=1043400000`, `profit=700000`
+- `(price ± profit) / 10` = 104,410,000 / 104,270,000 — exact match
+- Goldbridge `/price` (id=1) is a different row: ±30,000 Toman, not ±70,000
+
+To match a Farshad tile, call `GET /price?id=1013` (or set
+`BRIDGE_TARGET_PRICE_ID=1013`). `GET /prices` now includes `related_id`
+and `profit` so you can see which cards follow which master.
+
+Farshad's UI also divides Rial by 10 (Toman). Goldbridge still returns
+Rial; goldapp already converts for display. Goldapp's own commission
+fields (کسر کمیسیون) will still shift the number after goldbridge.
+
+## Farshad's live commission (سود) — the trick
+
+Farshad does **not** show the pure mid on the trade board. They store a
+pure mid in `price`, then pad each side by a field they call **سود**
+(`profit` in the JSON). Operators change that سود several times an hour.
+
+```
+pure mid (API)           = price
+Farshad commission (1 side) = profit + masterProfit     ← this is what moves
+Farshad بخرید (on screen) = price + commission
+Farshad بفروشید (on screen) = price - commission
+full screen spread        = 2 × commission
+```
+
+Example (live): `price=1039300000`, `profit=700000` → commission =
+70,000 Toman each side, screen buy/sell = mid ± 70,000 Toman.
+
+Goldbridge exposes this on every `/price` and `/prices` row:
+
+| field | meaning |
+|---|---|
+| `base_price` | pure mid (Rial) |
+| `profit` | raw Farshad سود (Rial) |
+| `master_profit` | extra pad, usually 0 |
+| `farshad_commission` | one-sided commission = profit + master_profit |
+| `farshad_spread` | full spread = 2 × commission |
+| `buy` / `sell` | what Farshad's app shows (diff=0 account) |
+
+### How to set YOUR commission so hedges stay profitable
+
+Your customer buys from you → you must buy the same from Farshad at
+Farshad's `buy`. Your customer sells to you → you must sell to Farshad
+at Farshad's `sell`.
+
+```
+your_customer_buy  >= farshad.buy  + your_extra_margin
+your_customer_sell <= farshad.sell - your_extra_margin
+```
+
+Equivalently, if you also quote as mid ± your_total_commission:
+
+```
+your_total_commission >= farshad_commission + your_extra_margin
+```
+
+Poll `/price?id=1013` (or whichever نقدی tile you hedge) about every
+second — when `farshad_commission` jumps, raise/lower your margin in
+goldapp to match. Do **not** hard-code 70,000 Toman; Farshad changes it.
+
+## Polling cadence (1 second, without breaking the source)
+
+Default `BRIDGE_POLL_SECONDS=1`. That stays safe because:
+
+1. **Apply-first** – every tick updates the target quote immediately,
+   even if upstream returned a 1-row truncated catalog
+2. **Merge-by-id** – partial catalogs never wipe secondary cards
+3. **Throttled full-catalog retry** – only about every 8s (and on cold
+   start), not on every truncated tick (so 1s ≠ 2 req/s forever)
+4. **RTT-aware sleep** – sleep is `poll - request_time`, so the
+   effective interval stays ~1s instead of `1s + network`
+5. **Short burst after a move** – `BRIDGE_POLL_FAST_SECONDS` (default
+   0.5s) for a few seconds after the primary quote changes
 
 ## Setup
 
@@ -38,7 +142,11 @@ Create `.env` (copy `.env.example` and fill in the real values):
 BRIDGE_SOURCE_UID=94
 BRIDGE_SOURCE_UTOKEN=<the real token>
 BRIDGE_TARGET_PRICE_ID=1
-BRIDGE_POLL_SECONDS=20
+# 1 = master نقد یکشنبه (hidden). Use 1013 to match Farshad /trade نقدی یکشنبه.
+BRIDGE_POLL_SECONDS=1
+# Optional: briefly poll faster after a quote change (defaults 0.5s / 3s window)
+# BRIDGE_POLL_FAST_SECONDS=0.5
+# BRIDGE_POLL_FAST_WINDOW_SECONDS=3
 ```
 
 Run it:
@@ -94,8 +202,8 @@ maintain later.
 ## Being a respectful API consumer
 
 This authenticates as someone else's real account on a platform you
-don't own. `BRIDGE_POLL_SECONDS=20` is intentionally conservative -
-don't drop this much lower without checking with the platform owner
-first. If this account ever gets rate-limited or flagged for unusual
-traffic, it's not just this integration that breaks - it could affect
-the actual person whose login this is.
+don't own. `BRIDGE_POLL_SECONDS=1` is the default (with throttled
+full-catalog retries). Don't go much below that without checking with
+the platform owner first. If this account ever gets rate-limited or
+flagged for unusual traffic, it's not just this integration that
+breaks - it could affect the actual person whose login this is.
