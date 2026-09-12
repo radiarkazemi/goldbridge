@@ -2,11 +2,13 @@
 Authorization: Bearer <BRIDGE_API_KEY> header (see app/core/security.py)."""
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.core.config import get_settings
 from app.core.security import rate_limit, require_api_key
 from app.models.schemas import ErrorResponse, PriceResponse, PricesResponse
 from app.services.price_cache import cache
 
 router = APIRouter(dependencies=[Depends(require_api_key), Depends(rate_limit)])
+settings = get_settings()
 
 _AUTH_RESPONSES = {
     401: {"model": ErrorResponse, "description": "Missing, malformed, or invalid API key."},
@@ -22,7 +24,11 @@ _AUTH_RESPONSES = {
         "Returns the full cleaned list of every item the source currently "
         "reports, refreshed on each poll cycle (see BRIDGE_POLL_SECONDS). "
         "Use this to find the `id` of the item you want, then query it "
-        "directly with `GET /price?id=`."
+        "directly with `GET /price?id=`.\n\n"
+        "Farshad's /trade board shows the **نقدی …** cards (active children "
+        "with a `related_id`). `BRIDGE_TARGET_PRICE_ID=1` is usually the "
+        "inactive master (e.g. نقد یکشنبه), which is a different instrument "
+        "and a different `profit` than the tile you see in the Farshad app."
     ),
     responses={
         **_AUTH_RESPONSES,
@@ -42,7 +48,10 @@ async def get_prices():
     description=(
         "**Without `id`:** returns the pre-computed buy/sell for "
         "`BRIDGE_TARGET_PRICE_ID` (kept for backwards compatibility with "
-        "goldapp's default price source config).\n\n"
+        "goldapp's default price source config). Check the returned `name` — "
+        "if it is the master (نقد یکشنبه) you will not match Farshad's "
+        "trade-board tile (نقدی یکشنبه). Pass `?id=` of the active related "
+        "card to match the app.\n\n"
         "**With `id`:** returns buy/sell for that specific item from the "
         "latest cached list - see `GET /prices` for available ids. No "
         "restart or `.env` change needed to switch items."
@@ -58,9 +67,11 @@ async def get_price(id: int | None = None):
     if id is None:
         if cache.latest_buy is None:
             raise HTTPException(status_code=503, detail="No price fetched yet")
+        target = cache.get_entry(settings.target_price_id)
         return PriceResponse(
             buy=cache.latest_buy,
             sell=cache.latest_sell,
+            name=(target or {}).get("name"),
             updated_at=cache.updated_at,
             source_updated_at=cache.source_updated_at,
             stale=cache.is_stale,

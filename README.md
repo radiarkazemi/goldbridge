@@ -35,6 +35,34 @@ A remaining caveat: Farshad then adds a per-user `diff` from
 `/userPrices` on top of the board quote. Goldbridge matches the board
 a user with `diff=0` sees.
 
+## Matching the Farshad /trade screen (id=1 vs نقدی …)
+
+Farshad's trade board does **not** show `id=1`. `id=1` is the inactive
+master (`نقد یکشنبه`, `isActive=0`, `profit=300000`). The green/red
+tiles are the **نقدی** children:
+
+| Farshad tile | list.php id | related_id | profit (Rial) | UI spread (Toman) |
+|---|---|---|---|---|
+| نقد یکشنبه (master, hidden) | 1 | — | 300,000 | ±30,000 |
+| نقدی یکشنبه (on /trade) | 1013 | 1 | 700,000 | ±70,000 |
+| نقدی دوشنبه (on /trade) | 1009 | 7 | 700,000 | ±70,000 |
+| نقدی کارتخوان (on /trade) | 1014 | 1 | 700,000 | ±70,000 (+ live offsets) |
+
+Worked example from a simultaneous screenshot + `list.php` dump:
+
+- Farshad **نقدی دوشنبه** showed 104,410,000 / 104,270,000 Toman
+- `id=1009`: `price=1043400000`, `profit=700000`
+- `(price ± profit) / 10` = 104,410,000 / 104,270,000 — exact match
+- Goldbridge `/price` (id=1) is a different row: ±30,000 Toman, not ±70,000
+
+To match a Farshad tile, call `GET /price?id=1013` (or set
+`BRIDGE_TARGET_PRICE_ID=1013`). `GET /prices` now includes `related_id`
+and `profit` so you can see which cards follow which master.
+
+Farshad's UI also divides Rial by 10 (Toman). Goldbridge still returns
+Rial; goldapp already converts for display. Goldapp's own commission
+fields (کسر کمیسیون) will still shift the number after goldbridge.
+
 ## Setup
 
 ```bash
@@ -51,6 +79,7 @@ Create `.env` (copy `.env.example` and fill in the real values):
 BRIDGE_SOURCE_UID=94
 BRIDGE_SOURCE_UTOKEN=<the real token>
 BRIDGE_TARGET_PRICE_ID=1
+# 1 = master نقد یکشنبه (hidden). Use 1013 to match Farshad /trade نقدی یکشنبه.
 BRIDGE_POLL_SECONDS=20
 ```
 

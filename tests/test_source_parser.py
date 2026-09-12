@@ -137,6 +137,94 @@ class FarshadScreenQuoteTests(unittest.TestCase):
         self.assertEqual(cleaned["buy"], 1046100000.0)
         self.assertEqual(cleaned["sell"], 1045500000.0)
         self.assertEqual(cleaned["base_price"], 1045800000)
+        self.assertEqual(cleaned["profit"], 300000)
+        self.assertIsNone(cleaned["related_id"])
+
+
+class ScreenshotPayloadTests(unittest.TestCase):
+    """Simultaneous Farshad /trade screenshot + list.php dump (2026-09-12).
+
+    The visible tiles are the نقدی children, not master id=1.
+    Farshad UI shows Toman (Rial / 10).
+    """
+
+    # Trimmed from the user-supplied list.php body.
+    payload = {
+        "prices": [
+            {
+                "id": 1,
+                "name": "نقد یکشنبه",
+                "isActive": 0,
+                "price": 1041900000,
+                "priceBuy": 0,
+                "priceSell": 0,
+                "profit": 300000,
+                "masterProfit": 0,
+                "relatedId": 0,
+                "relatedDiff": 0,
+            },
+            {
+                "id": 1009,
+                "name": "نقدی دوشنبه",
+                "isActive": 1,
+                "price": 1043400000,
+                "priceBuy": 0,
+                "priceSell": 0,
+                "profit": 700000,
+                "masterProfit": 0,
+                "relatedId": 7,
+                "relatedDiff": 0,
+            },
+            {
+                "id": 1013,
+                "name": "نقدی یکشنبه",
+                "isActive": 1,
+                "price": 1042000000,
+                "priceBuy": 0,
+                "priceSell": 0,
+                "profit": 700000,
+                "masterProfit": 0,
+                "relatedId": 1,
+                "relatedDiff": 0,
+            },
+            {
+                "id": 1014,
+                "name": "نقدی کارتخوان",
+                "isActive": 1,
+                "price": 1042400000,
+                "priceBuy": -500000,
+                "priceSell": 500000,
+                "profit": 700000,
+                "masterProfit": 0,
+                "relatedId": 1,
+                "relatedDiff": 500000,
+            },
+        ]
+    }
+
+    def test_id1_master_is_not_the_trade_board_tile(self):
+        buy, sell = extract_buy_sell(self.payload, 1)
+        # Rial. Toman = /10 → 104,220,000 / 104,160,000 (±30,000)
+        self.assertEqual((buy, sell), (1042200000.0, 1041600000.0))
+        board_buy, board_sell = extract_buy_sell(self.payload, 1013)
+        self.assertEqual((board_buy, board_sell), (1042700000.0, 1041300000.0))
+        self.assertNotEqual((buy, sell), (board_buy, board_sell))
+
+    def test_naqdi_doshanbeh_matches_farshad_screenshot_toman(self):
+        buy, sell = extract_buy_sell(self.payload, 1009)
+        # Screenshot: 104,410,000 buy / 104,270,000 sell (Toman)
+        self.assertEqual(buy / 10, 104_410_000)
+        self.assertEqual(sell / 10, 104_270_000)
+
+    def test_active_related_board_cards_for_master_1(self):
+        from app.services.source_parser import active_related_board_cards, clean_prices
+
+        cleaned = clean_prices(self.payload)
+        related = active_related_board_cards(cleaned, 1)
+        ids = {e["id"] for e in related}
+        self.assertEqual(ids, {1013, 1014})
+        names = {e["name"] for e in related}
+        self.assertEqual(names, {"نقدی یکشنبه", "نقدی کارتخوان"})
 
 
 if __name__ == "__main__":

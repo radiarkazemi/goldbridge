@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.core.logging import logger
 from app.services.price_cache import cache
 from app.services.session_store import load_session
-from app.services.source_parser import clean_prices, extract_buy_sell
+from app.services.source_parser import active_related_board_cards, clean_prices, extract_buy_sell
 
 settings = get_settings()
 
@@ -85,6 +85,8 @@ async def _poll_once(client: httpx.AsyncClient) -> None:
     elif merge_result == "empty":
         logger.warning("[poller] source returned an empty prices list")
 
+    _warn_if_target_is_inactive_master()
+
     result = extract_buy_sell(payload, settings.target_price_id)
     if result is None:
         # Partial list may omit the target id - fall back to whatever we
@@ -103,6 +105,36 @@ async def _poll_once(client: httpx.AsyncClient) -> None:
     cache.record_success(buy, sell, payload.get("lastUpdateTime"))
     cache.sync_target_quote(settings.target_price_id, buy, sell, payload.get("lastUpdateTime"))
     logger.info(f"[poller] updated: buy={buy} sell={sell}")
+
+
+_warned_inactive_master = False
+
+
+def _warn_if_target_is_inactive_master() -> None:
+    """Once per process: id=1-style masters are not the Farshad /trade tiles."""
+    global _warned_inactive_master
+    if _warned_inactive_master:
+        return
+    target = cache.get_entry(settings.target_price_id)
+    if not target:
+        return
+    if target.get("active"):
+        return
+    related = active_related_board_cards(cache.entries, settings.target_price_id)
+    if not related:
+        return
+    _warned_inactive_master = True
+    tiles = ", ".join(
+        f"id={e.get('id')} {e.get('name')} (profit={e.get('profit')})"
+        for e in related
+    )
+    logger.warning(
+        f"[poller] BRIDGE_TARGET_PRICE_ID={settings.target_price_id} "
+        f"({target.get('name')}) is inactive on Farshad. The /trade board "
+        f"shows the related نقدی cards instead: {tiles}. "
+        f"GET /price?id=<that id> (or set BRIDGE_TARGET_PRICE_ID) to match "
+        f"the app."
+    )
 
 
 def _backoff_seconds() -> float:

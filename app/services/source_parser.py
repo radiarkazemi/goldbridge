@@ -75,6 +75,7 @@ def clean_entry(entry: dict) -> dict:
     if result is not None:
         customer_buy, customer_sell = result
 
+    related_id = entry.get("relatedId") or 0
     return {
         "id": entry.get("id"),
         "name": entry.get("name"),
@@ -85,8 +86,11 @@ def clean_entry(entry: dict) -> dict:
         "allow_buy": bool(entry.get("allowBuy")),
         "allow_sell": bool(entry.get("allowSell")),
         "base_price": entry.get("price"),
+        "profit": entry.get("profit"),
         "buy": customer_buy,
         "sell": customer_sell,
+        "related_id": related_id if related_id else None,
+        "related_diff": entry.get("relatedDiff") or 0,
         "min": entry.get("min"),
         "max": entry.get("max"),
         "last_update_time": entry.get("lastUpdateTime"),
@@ -105,3 +109,19 @@ def extract_buy_sell(payload: dict, price_id: int) -> tuple[float, float] | None
     if not entry:
         return None
     return farshad_screen_buy_sell(entry)
+
+
+def active_related_board_cards(entries: list[dict], master_id: int) -> list[dict]:
+    """Farshad trade-board tiles that follow a master id via ``relatedId``.
+
+    Master rows like id=1 "نقد یکشنبه" are often inactive. The visible
+    /trade cards are the "نقدی …" children (related_id = master, isActive=1).
+    """
+    related = []
+    for entry in entries:
+        if entry.get("related_id") != master_id:
+            continue
+        if not entry.get("active"):
+            continue
+        related.append(entry)
+    return related

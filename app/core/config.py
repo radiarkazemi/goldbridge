@@ -18,6 +18,8 @@ class Settings:
     source_utoken_env: str | None = os.getenv("BRIDGE_SOURCE_UTOKEN")
 
     # --- Behavior ---
+    # 1 is Farshad's inactive master (نقد یکشنبه). The /trade tiles are the
+    # related نقدی cards (e.g. 1013). Override to match the board.
     target_price_id: int = int(os.getenv("BRIDGE_TARGET_PRICE_ID", "1"))
     # Default 2s - 1s hammers sekefarshad hard enough that it often
     # returns a truncated 1-item catalog. 2s stays fresh while keeping
