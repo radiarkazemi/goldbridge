@@ -138,7 +138,19 @@ class FarshadScreenQuoteTests(unittest.TestCase):
         self.assertEqual(cleaned["sell"], 1045500000.0)
         self.assertEqual(cleaned["base_price"], 1045800000)
         self.assertEqual(cleaned["profit"], 300000)
+        self.assertEqual(cleaned["master_profit"], 0)
+        self.assertEqual(cleaned["farshad_commission"], 300000.0)
+        self.assertEqual(cleaned["farshad_spread"], 600000.0)
         self.assertIsNone(cleaned["related_id"])
+
+    def test_farshad_commission_includes_master_profit(self):
+        from app.services.source_parser import farshad_commission_rial
+
+        entry = {"price": 1_000_000, "profit": 10_000, "masterProfit": 5_000}
+        self.assertEqual(farshad_commission_rial(entry), 15_000.0)
+        buy, sell = farshad_screen_buy_sell(entry)
+        self.assertEqual((buy, sell), (1_015_000.0, 985_000.0))
+        self.assertEqual(buy - sell, 30_000.0)  # full spread = 2 × commission
 
 
 class ScreenshotPayloadTests(unittest.TestCase):

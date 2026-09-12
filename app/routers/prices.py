@@ -67,11 +67,16 @@ async def get_price(id: int | None = None):
     if id is None:
         if cache.latest_buy is None:
             raise HTTPException(status_code=503, detail="No price fetched yet")
-        target = cache.get_entry(settings.target_price_id)
+        target = cache.get_entry(settings.target_price_id) or {}
         return PriceResponse(
             buy=cache.latest_buy,
             sell=cache.latest_sell,
-            name=(target or {}).get("name"),
+            name=target.get("name"),
+            base_price=target.get("base_price"),
+            profit=target.get("profit"),
+            master_profit=target.get("master_profit"),
+            farshad_commission=target.get("farshad_commission"),
+            farshad_spread=target.get("farshad_spread"),
             updated_at=cache.updated_at,
             source_updated_at=cache.source_updated_at,
             stale=cache.is_stale,
@@ -86,6 +91,11 @@ async def get_price(id: int | None = None):
         buy=entry["buy"],
         sell=entry["sell"],
         name=entry["name"],
+        base_price=entry.get("base_price"),
+        profit=entry.get("profit"),
+        master_profit=entry.get("master_profit"),
+        farshad_commission=entry.get("farshad_commission"),
+        farshad_spread=entry.get("farshad_spread"),
         updated_at=cache.updated_at,
         source_updated_at=entry["last_update_time"],
         stale=cache.is_stale,

@@ -17,6 +17,17 @@ def _num(value, default: float = 0.0) -> float:
         return default
 
 
+def farshad_commission_rial(entry: dict) -> float:
+    """Farshad's one-sided board commission (سود), in Rial.
+
+    Farshad stores a pure mid in ``price``, then pads the on-screen
+    بخرید/بفروشید by this amount each side. In the Farshad admin UI the
+    field is labeled سود and operators change it several times an hour.
+    ``masterProfit`` is an extra pad when the card is master-handled.
+    """
+    return _num(entry.get("profit")) + _num(entry.get("masterProfit"))
+
+
 def farshad_screen_buy_sell(entry: dict) -> tuple[float, float] | None:
     """
     Reproduce the buy/sell Farshad shows on the trade board.
@@ -26,6 +37,9 @@ def farshad_screen_buy_sell(entry: dict) -> tuple[float, float] | None:
 
         بخرید  (customer buy)  = price + profit + masterProfit
         بفروشید (customer sell) = price - profit - masterProfit
+
+    So Farshad's live commission (one side) is ``profit + masterProfit``.
+    The full bid/ask spread on screen is twice that.
 
     ``priceBuy`` / ``priceSell`` are NOT used for the on-screen quote.
     They are bot live-offsets (and sometimes absolute admin-side
@@ -45,11 +59,10 @@ def farshad_screen_buy_sell(entry: dict) -> tuple[float, float] | None:
         return None
 
     base = _num(entry.get("price"))
-    profit = _num(entry.get("profit"))
-    master = _num(entry.get("masterProfit"))
+    commission = farshad_commission_rial(entry)
 
-    buy = base + profit + master
-    sell = base - profit - master
+    buy = base + commission
+    sell = base - commission
 
     # Same special rounding as gp/vp: nearest 10,000 Rial for شکسته gold.
     name = entry.get("name") or ""
@@ -75,6 +88,9 @@ def clean_entry(entry: dict) -> dict:
     if result is not None:
         customer_buy, customer_sell = result
 
+    profit = entry.get("profit")
+    master_profit = entry.get("masterProfit")
+    commission = farshad_commission_rial(entry) if entry.get("price") is not None else None
     related_id = entry.get("relatedId") or 0
     return {
         "id": entry.get("id"),
@@ -85,8 +101,15 @@ def clean_entry(entry: dict) -> dict:
         "active": bool(entry.get("isActive")),
         "allow_buy": bool(entry.get("allowBuy")),
         "allow_sell": bool(entry.get("allowSell")),
+        # Pure mid from Farshad (before their سود commission).
         "base_price": entry.get("price"),
-        "profit": entry.get("profit"),
+        # Raw Farshad "سود" field — this is the commission they change live.
+        "profit": profit,
+        "master_profit": master_profit,
+        # One-sided commission in Rial (= profit + masterProfit).
+        # Toman = farshad_commission / 10. Full screen spread = 2× this.
+        "farshad_commission": commission,
+        "farshad_spread": None if commission is None else commission * 2.0,
         "buy": customer_buy,
         "sell": customer_sell,
         "related_id": related_id if related_id else None,

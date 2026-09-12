@@ -63,6 +63,55 @@ Farshad's UI also divides Rial by 10 (Toman). Goldbridge still returns
 Rial; goldapp already converts for display. Goldapp's own commission
 fields (کسر کمیسیون) will still shift the number after goldbridge.
 
+## Farshad's live commission (سود) — the trick
+
+Farshad does **not** show the pure mid on the trade board. They store a
+pure mid in `price`, then pad each side by a field they call **سود**
+(`profit` in the JSON). Operators change that سود several times an hour.
+
+```
+pure mid (API)           = price
+Farshad commission (1 side) = profit + masterProfit     ← this is what moves
+Farshad بخرید (on screen) = price + commission
+Farshad بفروشید (on screen) = price - commission
+full screen spread        = 2 × commission
+```
+
+Example (live): `price=1039300000`, `profit=700000` → commission =
+70,000 Toman each side, screen buy/sell = mid ± 70,000 Toman.
+
+Goldbridge exposes this on every `/price` and `/prices` row:
+
+| field | meaning |
+|---|---|
+| `base_price` | pure mid (Rial) |
+| `profit` | raw Farshad سود (Rial) |
+| `master_profit` | extra pad, usually 0 |
+| `farshad_commission` | one-sided commission = profit + master_profit |
+| `farshad_spread` | full spread = 2 × commission |
+| `buy` / `sell` | what Farshad's app shows (diff=0 account) |
+
+### How to set YOUR commission so hedges stay profitable
+
+Your customer buys from you → you must buy the same from Farshad at
+Farshad's `buy`. Your customer sells to you → you must sell to Farshad
+at Farshad's `sell`.
+
+```
+your_customer_buy  >= farshad.buy  + your_extra_margin
+your_customer_sell <= farshad.sell - your_extra_margin
+```
+
+Equivalently, if you also quote as mid ± your_total_commission:
+
+```
+your_total_commission >= farshad_commission + your_extra_margin
+```
+
+Poll `/price?id=1013` (or whichever نقدی tile you hedge) about every
+second — when `farshad_commission` jumps, raise/lower your margin in
+goldapp to match. Do **not** hard-code 70,000 Toman; Farshad changes it.
+
 ## Polling cadence (1 second, without breaking the source)
 
 Default `BRIDGE_POLL_SECONDS=1`. That stays safe because:
