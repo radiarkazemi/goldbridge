@@ -63,6 +63,20 @@ Farshad's UI also divides Rial by 10 (Toman). Goldbridge still returns
 Rial; goldapp already converts for display. Goldapp's own commission
 fields (کسر کمیسیون) will still shift the number after goldbridge.
 
+## Polling cadence (1 second, without breaking the source)
+
+Default `BRIDGE_POLL_SECONDS=1`. That stays safe because:
+
+1. **Apply-first** – every tick updates the target quote immediately,
+   even if upstream returned a 1-row truncated catalog
+2. **Merge-by-id** – partial catalogs never wipe secondary cards
+3. **Throttled full-catalog retry** – only about every 8s (and on cold
+   start), not on every truncated tick (so 1s ≠ 2 req/s forever)
+4. **RTT-aware sleep** – sleep is `poll - request_time`, so the
+   effective interval stays ~1s instead of `1s + network`
+5. **Short burst after a move** – `BRIDGE_POLL_FAST_SECONDS` (default
+   0.5s) for a few seconds after the primary quote changes
+
 ## Setup
 
 ```bash
@@ -80,7 +94,10 @@ BRIDGE_SOURCE_UID=94
 BRIDGE_SOURCE_UTOKEN=<the real token>
 BRIDGE_TARGET_PRICE_ID=1
 # 1 = master نقد یکشنبه (hidden). Use 1013 to match Farshad /trade نقدی یکشنبه.
-BRIDGE_POLL_SECONDS=20
+BRIDGE_POLL_SECONDS=1
+# Optional: briefly poll faster after a quote change (defaults 0.5s / 3s window)
+# BRIDGE_POLL_FAST_SECONDS=0.5
+# BRIDGE_POLL_FAST_WINDOW_SECONDS=3
 ```
 
 Run it:
@@ -136,8 +153,8 @@ maintain later.
 ## Being a respectful API consumer
 
 This authenticates as someone else's real account on a platform you
-don't own. `BRIDGE_POLL_SECONDS=20` is intentionally conservative -
-don't drop this much lower without checking with the platform owner
-first. If this account ever gets rate-limited or flagged for unusual
-traffic, it's not just this integration that breaks - it could affect
-the actual person whose login this is.
+don't own. `BRIDGE_POLL_SECONDS=1` is the default (with throttled
+full-catalog retries). Don't go much below that without checking with
+the platform owner first. If this account ever gets rate-limited or
+flagged for unusual traffic, it's not just this integration that
+breaks - it could affect the actual person whose login this is.

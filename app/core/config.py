@@ -21,10 +21,15 @@ class Settings:
     # 1 is Farshad's inactive master (نقد یکشنبه). The /trade tiles are the
     # related نقدی cards (e.g. 1013). Override to match the board.
     target_price_id: int = int(os.getenv("BRIDGE_TARGET_PRICE_ID", "1"))
-    # Default 2s - 1s hammers sekefarshad hard enough that it often
-    # returns a truncated 1-item catalog. 2s stays fresh while keeping
-    # full-list responses reliable.
-    poll_seconds: float = float(os.getenv("BRIDGE_POLL_SECONDS", "2"))
+    # Default 1s. Partial/truncated catalogs are applied immediately and
+    # merged by id (see price_cache.record_entries); a full-catalog chase
+    # only runs about every 8s, so 1s stays safe without doubling load.
+    # The source's own lastUpdateTime is second-granularity anyway.
+    poll_seconds: float = float(os.getenv("BRIDGE_POLL_SECONDS", "1"))
+    # Brief faster cadence right after a primary quote change so the next
+    # move is caught quickly, then settle back to poll_seconds.
+    poll_fast_seconds: float = float(os.getenv("BRIDGE_POLL_FAST_SECONDS", "0.5"))
+    poll_fast_window_seconds: float = float(os.getenv("BRIDGE_POLL_FAST_WINDOW_SECONDS", "3"))
     max_stale_polls: int = int(os.getenv("BRIDGE_MAX_STALE_POLLS", "5"))
     max_backoff_seconds: float = float(os.getenv("BRIDGE_MAX_BACKOFF_SECONDS", "60"))
 
@@ -33,7 +38,10 @@ class Settings:
     # goldapp side exactly. Blank => /price and /prices are UNAUTHENTICATED
     # (dev-only; a startup warning is logged in that case).
     api_key: str = os.getenv("BRIDGE_API_KEY", "")
-    rate_limit_per_minute: int = int(os.getenv("BRIDGE_RATE_LIMIT_PER_MINUTE", "120"))
+    # Generous default: goldapp polling /price + /prices about every 0.5–1s
+    # from 127.0.0.1 can exceed 120/min. A tight cap causes 429s and makes
+    # the UI feel laggy even when the upstream poller is healthy.
+    rate_limit_per_minute: int = int(os.getenv("BRIDGE_RATE_LIMIT_PER_MINUTE", "600"))
 
     # --- Server ---
     host: str = os.getenv("BRIDGE_HOST", "127.0.0.1")
