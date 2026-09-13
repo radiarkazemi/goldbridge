@@ -74,7 +74,14 @@ class PricesResponse(BaseModel):
 class PriceResponse(BaseModel):
     buy: float = Field(..., description="Farshad on-screen customer-buy (بخرید) in Rial: base_price + farshad_commission.")
     sell: float = Field(..., description="Farshad on-screen customer-sell (بفروشید) in Rial: base_price - farshad_commission.")
-    name: str | None = Field(None, description="Item name. Compare this to the Farshad /trade tile — id=1 is often the master (نقد …), not the visible نقدی … card.")
+    id: int | None = Field(
+        None,
+        description="Farshad instrument id for this quote. With BRIDGE_TARGET_MODE=tomorrow this is tomorrow's نقدی … tile (Asia/Tehran).",
+    )
+    name: str | None = Field(
+        None,
+        description="Item name. Default /price tracks tomorrow's main نقدی delivery day (e.g. Sunday → نقدی دوشنبه), not yesterday's tile.",
+    )
     base_price: float | None = Field(None, description="Farshad pure mid in Rial (before their سود commission).")
     profit: float | None = Field(None, description="Raw Farshad 'سود' (live commission they change during the day), Rial.")
     master_profit: float | None = Field(None, description="Extra Farshad masterProfit pad in Rial.")
@@ -92,7 +99,8 @@ class PriceResponse(BaseModel):
             "example": {
                 "buy": 1040000000.0,
                 "sell": 1038600000.0,
-                "name": "نقدی یکشنبه",
+                "id": 1009,
+                "name": "نقدی دوشنبه",
                 "base_price": 1039300000,
                 "profit": 700000,
                 "master_profit": 0,

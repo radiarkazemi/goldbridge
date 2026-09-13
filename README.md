@@ -35,29 +35,26 @@ A remaining caveat: Farshad then adds a per-user `diff` from
 `/userPrices` on top of the board quote. Goldbridge matches the board
 a user with `diff=0` sees.
 
-## Matching the Farshad /trade screen (id=1 vs نقدی …)
+## Matching the Farshad /trade screen (delivery weekday)
 
-Farshad's trade board does **not** show `id=1`. `id=1` is the inactive
-master (`نقد یکشنبه`, `isActive=0`, `profit=300000`). The green/red
-tiles are the **نقدی** children:
+Farshad cash tiles are named by **delivery** weekday. The live *main*
+quote is usually **tomorrow's** `نقدی …` in Asia/Tehran (Sunday trade →
+`نقدی دوشنبه`, not yesterday's `نقدی یکشنبه`). Masters like `id=1` are
+often inactive and may be renamed day-to-day; the green/red `/trade`
+tiles are the **نقدی** children.
 
-| Farshad tile | list.php id | related_id | profit (Rial) | UI spread (Toman) |
-|---|---|---|---|---|
-| نقد یکشنبه (master, hidden) | 1 | — | 300,000 | ±30,000 |
-| نقدی یکشنبه (on /trade) | 1013 | 1 | 700,000 | ±70,000 |
-| نقدی دوشنبه (on /trade) | 1009 | 7 | 700,000 | ±70,000 |
-| نقدی کارتخوان (on /trade) | 1014 | 1 | 700,000 | ±70,000 (+ live offsets) |
+| Farshad tile | list.php id | notes |
+|---|---|---|
+| نقد … (master, often hidden) | 1 / 7 / … | smaller سود; not the board tile |
+| نقدی یکشنبه | 1013 | Sunday delivery |
+| نقدی دوشنبه | 1009 | Monday delivery — Sunday's main live tile |
+| نقدی سه‌شنبه | 1010 | Tuesday delivery |
+| نقدی کارتخوان | 1014 | card-reader variant — not the main cash target |
 
-Worked example from a simultaneous screenshot + `list.php` dump:
-
-- Farshad **نقدی دوشنبه** showed 104,410,000 / 104,270,000 Toman
-- `id=1009`: `price=1043400000`, `profit=700000`
-- `(price ± profit) / 10` = 104,410,000 / 104,270,000 — exact match
-- Goldbridge `/price` (id=1) is a different row: ±30,000 Toman, not ±70,000
-
-To match a Farshad tile, call `GET /price?id=1013` (or set
-`BRIDGE_TARGET_PRICE_ID=1013`). `GET /prices` now includes `related_id`
-and `profit` so you can see which cards follow which master.
+Default: `BRIDGE_TARGET_MODE=tomorrow` auto-picks tomorrow's active
+`نقدی` board card each poll (skips کارتخوان). Pin with
+`BRIDGE_TARGET_MODE=fixed` + `BRIDGE_TARGET_PRICE_ID=<id>`.
+`GET /price` returns the resolved `id` + `name`.
 
 Farshad's UI also divides Rial by 10 (Toman). Goldbridge still returns
 Rial; goldapp already converts for display. Goldapp's own commission
@@ -108,7 +105,7 @@ Equivalently, if you also quote as mid ± your_total_commission:
 your_total_commission >= farshad_commission + your_extra_margin
 ```
 
-Poll `/price?id=1013` (or whichever نقدی tile you hedge) about every
+Poll `/price` (tomorrow auto) or `/price?id=<نقدی id>` about every
 second — when `farshad_commission` jumps, raise/lower your margin in
 goldapp to match. Do **not** hard-code 70,000 Toman; Farshad changes it.
 
@@ -141,8 +138,10 @@ Create `.env` (copy `.env.example` and fill in the real values):
 ```
 BRIDGE_SOURCE_UID=94
 BRIDGE_SOURCE_UTOKEN=<the real token>
-BRIDGE_TARGET_PRICE_ID=1
-# 1 = master نقد یکشنبه (hidden). Use 1013 to match Farshad /trade نقدی یکشنبه.
+BRIDGE_TARGET_MODE=tomorrow
+# tomorrow = auto-pick tomorrow's نقدی … (Asia/Tehran). fixed = pin id below.
+BRIDGE_TARGET_PRICE_ID=1009
+# fallback / fixed pin (1009 = نقدی دوشنبه)
 BRIDGE_POLL_SECONDS=1
 # Optional: briefly poll faster after a quote change (defaults 0.5s / 3s window)
 # BRIDGE_POLL_FAST_SECONDS=0.5

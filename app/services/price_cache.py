@@ -21,6 +21,8 @@ class PriceCache:
         self.source_updated_at: str | None = None
         self.entries: list[dict] = []
         self.consecutive_failures: int = 0
+        # Effective instrument driving /price (auto tomorrow or fixed pin).
+        self.target_price_id: int | None = None
 
     def record_success(self, buy: float, sell: float, source_updated_at: str | None):
         self.latest_buy = buy

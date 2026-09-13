@@ -19,8 +19,10 @@ from app.core.logging import logger
 from app.services.price_cache import cache
 from app.services.session_store import load_session
 from app.services.source_parser import active_related_board_cards, clean_prices, extract_buy_sell
+from app.services.target_resolver import resolve_target_price_id, tomorrow_weekday_fa
 
 settings = get_settings()
+_last_logged_target_id: int | None = None
 
 # Prefer a saved login session (from `python login.py`) over the static
 # .env values - lets you switch to real phone+code login without
@@ -48,6 +50,27 @@ async def _fetch_payload(client: httpx.AsyncClient) -> dict:
     return resp.json()
 
 
+def _effective_target_id() -> int:
+    """Tomorrow's نقدی tile (default) or the fixed env pin."""
+    return resolve_target_price_id(
+        cache.entries,
+        mode=settings.target_mode,
+        fixed_id=settings.target_price_id,
+    )
+
+
+def _log_target_if_changed(target_id: int) -> None:
+    global _last_logged_target_id
+    if target_id == _last_logged_target_id:
+        return
+    _last_logged_target_id = target_id
+    entry = cache.get_entry(target_id) or {}
+    logger.info(
+        f"[poller] primary target id={target_id} name={entry.get('name')!r} "
+        f"mode={settings.target_mode} tomorrow={tomorrow_weekday_fa()!r}"
+    )
+
+
 def _apply_tick(payload: dict, new_entries: list[dict]) -> bool:
     """Merge catalog + update primary quote. Returns True if buy/sell changed."""
     merge_result = cache.record_entries(new_entries)
@@ -59,35 +82,38 @@ def _apply_tick(payload: dict, new_entries: list[dict]) -> bool:
     elif merge_result == "empty":
         logger.warning("[poller] source returned an empty prices list")
 
-    _warn_if_target_is_inactive_master()
+    target_id = _effective_target_id()
+    cache.target_price_id = target_id
+    _log_target_if_changed(target_id)
+    _warn_if_target_is_inactive_master(target_id)
 
-    result = extract_buy_sell(payload, settings.target_price_id)
+    result = extract_buy_sell(payload, target_id)
     if result is None:
         # Partial list may omit the target id - fall back to whatever we
         # already have cached for that id rather than counting a failure.
-        cached = cache.get_entry(settings.target_price_id)
+        cached = cache.get_entry(target_id)
         if cached and cached.get("buy") is not None and cached.get("sell") is not None:
             buy, sell = float(cached["buy"]), float(cached["sell"])
             cache.record_success(
                 buy, sell, payload.get("lastUpdateTime") or cached.get("last_update_time")
             )
             return False
-        logger.warning(f"[poller] couldn't find/parse price id={settings.target_price_id}")
+        logger.warning(f"[poller] couldn't find/parse price id={target_id}")
         cache.record_failure()
         return False
 
     buy, sell = result
     changed = buy != cache.latest_buy or sell != cache.latest_sell
     cache.record_success(buy, sell, payload.get("lastUpdateTime"))
-    cache.sync_target_quote(settings.target_price_id, buy, sell, payload.get("lastUpdateTime"))
+    cache.sync_target_quote(target_id, buy, sell, payload.get("lastUpdateTime"))
     if changed:
         logger.info(
-            f"[poller] updated: buy={buy} sell={sell} "
+            f"[poller] updated: id={target_id} buy={buy} sell={sell} "
             f"(entries={len(cache.entries)}, tick={len(new_entries)})"
         )
     else:
         logger.debug(
-            f"[poller] unchanged: buy={buy} sell={sell} "
+            f"[poller] unchanged: id={target_id} buy={buy} sell={sell} "
             f"(entries={len(cache.entries)}, tick={len(new_entries)})"
         )
     return changed
@@ -139,17 +165,17 @@ async def _poll_once(client: httpx.AsyncClient, *, force_full_retry: bool = Fals
 _warned_inactive_master = False
 
 
-def _warn_if_target_is_inactive_master() -> None:
+def _warn_if_target_is_inactive_master(target_id: int) -> None:
     """Once per process: id=1-style masters are not the Farshad /trade tiles."""
     global _warned_inactive_master
     if _warned_inactive_master:
         return
-    target = cache.get_entry(settings.target_price_id)
+    target = cache.get_entry(target_id)
     if not target:
         return
     if target.get("active"):
         return
-    related = active_related_board_cards(cache.entries, settings.target_price_id)
+    related = active_related_board_cards(cache.entries, target_id)
     if not related:
         return
     _warned_inactive_master = True
@@ -158,11 +184,10 @@ def _warn_if_target_is_inactive_master() -> None:
         for e in related
     )
     logger.warning(
-        f"[poller] BRIDGE_TARGET_PRICE_ID={settings.target_price_id} "
-        f"({target.get('name')}) is inactive on Farshad. The /trade board "
-        f"shows the related نقدی cards instead: {tiles}. "
-        f"GET /price?id=<that id> (or set BRIDGE_TARGET_PRICE_ID) to match "
-        f"the app."
+        f"[poller] target id={target_id} ({target.get('name')}) is inactive "
+        f"on Farshad. The /trade board shows the related نقدی cards instead: "
+        f"{tiles}. Prefer BRIDGE_TARGET_MODE=tomorrow (auto نقدی) or "
+        f"GET /price?id=<board id> / BRIDGE_TARGET_MODE=fixed with that id."
     )
 
 

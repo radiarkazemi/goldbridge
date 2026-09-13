@@ -17,7 +17,7 @@ fields and stop assuming old behavior.
    buy  = price + profit + masterProfit
    sell = price - profit - masterProfit
    ```
-2. Default target id was `1` (`نقد یکشنبه`) — that is Farshad’s **inactive master**. The visible Farshad `/trade` tile is **`نقدی یکشنبه` = id `1013`**, with a **different** commission.
+2. Default target used to follow a fixed id (often yesterday’s `نقدی یکشنبه` = `1013`). Farshad’s **main cash** is named by **delivery weekday** — on Sunday the live tile is **`نقدی دوشنبه` = id `1009`**, not یکشنبه.
 3. Farshad’s live commission (**سود** / `profit`) changes several times per hour. Goldapp needs that value to size its own margin so hedges stay profitable.
 4. Old goldbridge also auto-applied `BRIDGE_SHOP_MARGIN_TOMAN=10000` (±10,000 Toman). **That automatic padding is removed.** Goldapp must apply its own margin.
 
@@ -26,11 +26,12 @@ fields and stop assuming old behavior.
 ## 2. Current production `.env` on goldbridge
 
 ```
-BRIDGE_TARGET_PRICE_ID=1013
+BRIDGE_TARGET_MODE=tomorrow
+BRIDGE_TARGET_PRICE_ID=1009
 BRIDGE_POLL_SECONDS=1
 ```
 
-So `GET /price` (no query) already returns **نقدی یکشنبه** (id 1013), not master id 1.
+`GET /price` (no query) auto-picks **tomorrow’s** Farshad `نقدی …` tile in Asia/Tehran (Sunday → **نقدی دوشنبه** / 1009). Response includes `id` + `name`. Pin with `BRIDGE_TARGET_MODE=fixed` if needed.
 
 ---
 
@@ -90,12 +91,13 @@ Same per-row fields, plus:
 
 | Farshad UI | id | Typical commission | Notes |
 |---|---|---|---|
-| نقد یکشنبه (hidden master) | `1` | ~30,000 Toman/side | `active=false` — **not** the trade tile |
-| **نقدی یکشنبه** (on /trade) | **`1013`** | ~70,000 Toman/side | **Current default `/price` target** |
-| نقدی دوشنبه | `1009` | varies | `related_id` → 7 |
-| نقدی کارتخوان | `1014` | varies | POS card |
+| نقد … (hidden master) | `1` / `7` / … | ~30,000 Toman/side | often inactive — **not** the board tile |
+| نقدی یکشنبه | `1013` | ~70,000 Toman/side | Sunday delivery (yesterday on a Sunday session) |
+| **نقدی دوشنبه** | **`1009`** | varies | Monday delivery — **Sunday’s auto `/price` target** |
+| نقدی سه‌شنبه | `1010` | varies | Tuesday delivery |
+| نقدی کارتخوان | `1014` | varies | POS card — not the main cash target |
 
-If goldapp still labels a card “نقد یکشنبه” but hedges the Farshad **نقدی** board, it must use **id 1013** (or whatever `/prices` shows as the active نقدی child), not id 1.
+Default `/price` uses `BRIDGE_TARGET_MODE=tomorrow` (Asia/Tehran). Do not hard-code 1013 for “today’s main cash.”
 
 ---
 
@@ -147,16 +149,18 @@ GOLDAPP_PRICE_API_KEY=<same as BRIDGE_API_KEY>
 - `farshad_commission`
 - `farshad_spread`
 - `profit`
+- `id`
 - `name`
 - `stale`
 
-If goldapp only mapped `buy`/`sell` before, add the commission fields so the admin UI or margin engine can react.
+If goldapp only mapped `buy`/`sell` before, add the commission fields so the admin UI or margin engine can react. Prefer trusting `/price`’s resolved `id`/`name` when using the default tomorrow mode.
 
 ### D. Optional: pick instrument by id
 
 ```
-GET /price?id=1013
-GET /prices   # discover ids, related_id, active, farshad_commission per row
+GET /price          # tomorrow's main نقدی (auto)
+GET /price?id=1009  # pin نقدی دوشنبه
+GET /prices         # discover ids, related_id, farshad_commission per row
 ```
 
 ---
@@ -165,7 +169,7 @@ GET /prices   # discover ids, related_id, active, farshad_commission per row
 
 | Before | After |
 |---|---|
-| `/price` often tracked id `1` (master) | `/price` tracks **1013** (نقدی یکشنبه) |
+| `/price` often tracked id `1` (master) or fixed `1013` | `/price` auto-tracks **tomorrow’s نقدی …** (e.g. Sunday → **1009** نقدی دوشنبه); response includes `id` |
 | Bridge may have added ±10k Toman shop margin | **No shop margin** from bridge — pure Farshad screen quote |
 | Commission not exposed | Use **`farshad_commission`** |
 | Formula may have used priceBuy/priceSell | Formula is **price ± profit** |
@@ -184,15 +188,15 @@ curl -s -H "Authorization: Bearer $BRIDGE_API_KEY" http://127.0.0.1:9100/price |
 
 Confirm:
 
-- [ ] `name` is `نقدی یکشنبه` (not `نقد یکشنبه`)
-- [ ] `farshad_commission` is present and non-zero (often `700000`)
+- [ ] `id` / `name` match **tomorrow’s** main نقدی tile (Sunday → `1009` / `نقدی دوشنبه`)
+- [ ] `farshad_commission` is present and non-zero
 - [ ] `buy == base_price + farshad_commission`
 - [ ] `sell == base_price - farshad_commission`
 - [ ] `stale == false`
 - [ ] Goldapp customer buy ≥ Farshad `buy` + extra margin
 - [ ] Goldapp customer sell ≤ Farshad `sell` - extra margin
 
-Compare side-by-side with Farshad web/app **نقدی یکشنبه** (Toman = Rial/10).
+Compare side-by-side with Farshad web/app **tomorrow delivery** نقدی tile (Toman = Rial/10).
 
 ---
 
@@ -207,7 +211,7 @@ Compare side-by-side with Farshad web/app **نقدی یکشنبه** (Toman = Ria
 
 1. Update price-source client/schema to parse `base_price`, `farshad_commission`, `farshad_spread`, `profit`, `master_profit`, `name`, `stale`.
 2. Drive dynamic margin from `farshad_commission` (+ configurable extra Toman).
-3. Ensure the product mapped to Farshad Sunday cash uses instrument **1013** (or configure via env).
+3. Prefer default `/price` (tomorrow auto) or map products by delivery weekday — do **not** hard-code 1013 as “today’s main cash.”
 4. Remove any assumption that goldbridge already added 10,000 Toman shop margin.
 5. Add a small admin/debug readout: Farshad mid, Farshad commission (Toman), our extra margin, final customer buy/sell.
 6. Test against live `127.0.0.1:9100/price` on the VPS.

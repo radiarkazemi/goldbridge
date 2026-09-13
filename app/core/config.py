@@ -18,9 +18,15 @@ class Settings:
     source_utoken_env: str | None = os.getenv("BRIDGE_SOURCE_UTOKEN")
 
     # --- Behavior ---
-    # 1 is Farshad's inactive master (نقد یکشنبه). The /trade tiles are the
-    # related نقدی cards (e.g. 1013). Override to match the board.
-    target_price_id: int = int(os.getenv("BRIDGE_TARGET_PRICE_ID", "1"))
+    # Farshad cash tiles are named by *delivery* weekday. The live main
+    # quote is usually tomorrow's نقدی … (Asia/Tehran), e.g. on Sunday
+    # trade نقدی دوشنبه — not yesterday's نقدی یکشنبه.
+    #   tomorrow = auto-pick that board tile each poll (default)
+    #   fixed    = always use BRIDGE_TARGET_PRICE_ID
+    target_mode: str = os.getenv("BRIDGE_TARGET_MODE", "tomorrow")
+    # Used as the pin when target_mode=fixed, and as fallback when tomorrow
+    # auto-pick cannot find a matching name yet (cold start / empty cache).
+    target_price_id: int = int(os.getenv("BRIDGE_TARGET_PRICE_ID", "1009"))
     # Default 1s. Partial/truncated catalogs are applied immediately and
     # merged by id (see price_cache.record_entries); a full-catalog chase
     # only runs about every 8s, so 1s stays safe without doubling load.

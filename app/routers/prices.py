@@ -26,9 +26,10 @@ _AUTH_RESPONSES = {
         "Use this to find the `id` of the item you want, then query it "
         "directly with `GET /price?id=`.\n\n"
         "Farshad's /trade board shows the **نقدی …** cards (active children "
-        "with a `related_id`). `BRIDGE_TARGET_PRICE_ID=1` is usually the "
-        "inactive master (e.g. نقد یکشنبه), which is a different instrument "
-        "and a different `profit` than the tile you see in the Farshad app."
+        "with a `related_id`). Default `GET /price` uses "
+        "`BRIDGE_TARGET_MODE=tomorrow` (tomorrow's delivery weekday in "
+        "Asia/Tehran). Masters (`نقد …`) are usually inactive and a "
+        "different `profit` than the board tile."
     ),
     responses={
         **_AUTH_RESPONSES,
@@ -46,12 +47,11 @@ async def get_prices():
     response_model=PriceResponse,
     summary="Get a single buy/sell price",
     description=(
-        "**Without `id`:** returns the pre-computed buy/sell for "
-        "`BRIDGE_TARGET_PRICE_ID` (kept for backwards compatibility with "
-        "goldapp's default price source config). Check the returned `name` — "
-        "if it is the master (نقد یکشنبه) you will not match Farshad's "
-        "trade-board tile (نقدی یکشنبه). Pass `?id=` of the active related "
-        "card to match the app.\n\n"
+        "**Without `id`:** returns the primary cash quote. Default "
+        "`BRIDGE_TARGET_MODE=tomorrow` auto-picks tomorrow's Farshad "
+        "نقدی … delivery tile in Asia/Tehran (Sunday → نقدی دوشنبه). "
+        "Set `BRIDGE_TARGET_MODE=fixed` and `BRIDGE_TARGET_PRICE_ID` to pin "
+        "one instrument. Check returned `id` / `name`.\n\n"
         "**With `id`:** returns buy/sell for that specific item from the "
         "latest cached list - see `GET /prices` for available ids. No "
         "restart or `.env` change needed to switch items."
@@ -67,10 +67,12 @@ async def get_price(id: int | None = None):
     if id is None:
         if cache.latest_buy is None:
             raise HTTPException(status_code=503, detail="No price fetched yet")
-        target = cache.get_entry(settings.target_price_id) or {}
+        target_id = cache.target_price_id or settings.target_price_id
+        target = cache.get_entry(target_id) or {}
         return PriceResponse(
             buy=cache.latest_buy,
             sell=cache.latest_sell,
+            id=target.get("id") if target.get("id") is not None else target_id,
             name=target.get("name"),
             base_price=target.get("base_price"),
             profit=target.get("profit"),
@@ -90,6 +92,7 @@ async def get_price(id: int | None = None):
     return PriceResponse(
         buy=entry["buy"],
         sell=entry["sell"],
+        id=entry.get("id"),
         name=entry["name"],
         base_price=entry.get("base_price"),
         profit=entry.get("profit"),
