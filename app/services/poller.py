@@ -106,6 +106,9 @@ def _apply_tick(payload: dict, new_entries: list[dict]) -> bool:
     changed = buy != cache.latest_buy or sell != cache.latest_sell
     cache.record_success(buy, sell, payload.get("lastUpdateTime"))
     cache.sync_target_quote(target_id, buy, sell, payload.get("lastUpdateTime"))
+    # Stable id for goldapp cards (does not change when Farshad rolls the
+    # delivery weekday tile from e.g. 1013 → 1009 → 1011).
+    cache.sync_primary_alias(settings.primary_alias_id, target_id)
     if changed:
         logger.info(
             f"[poller] updated: id={target_id} buy={buy} sell={sell} "

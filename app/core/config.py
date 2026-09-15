@@ -27,6 +27,11 @@ class Settings:
     # Used as the pin when target_mode=fixed, and as fallback when tomorrow
     # auto-pick cannot find a matching name yet (cold start / empty cache).
     target_price_id: int = int(os.getenv("BRIDGE_TARGET_PRICE_ID", "1009"))
+    # Stable synthetic id always published on /prices that mirrors the
+    # resolved primary (tomorrow) quote. Goldapp should pin its main cash
+    # card to this id so it does not stay stuck on yesterday's Farshad id
+    # (e.g. 1013 یکشنبه while live is 1011 چهارشنبه).
+    primary_alias_id: int = int(os.getenv("BRIDGE_PRIMARY_ALIAS_ID", "900000"))
     # Default 1s. Partial/truncated catalogs are applied immediately and
     # merged by id (see price_cache.record_entries); a full-catalog chase
     # only runs about every 8s, so 1s stays safe without doubling load.
