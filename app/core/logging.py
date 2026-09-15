@@ -19,6 +19,10 @@ def setup_logging() -> logging.Logger:
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx logs every request at INFO - at 1 poll/sec that drowns the
+    # useful poller lines. Keep warnings/errors only.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     return logging.getLogger("goldbridge")
 
 

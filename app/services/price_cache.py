@@ -21,6 +21,8 @@ class PriceCache:
         self.source_updated_at: str | None = None
         self.entries: list[dict] = []
         self.consecutive_failures: int = 0
+        # Effective instrument driving /price (auto tomorrow or fixed pin).
+        self.target_price_id: int | None = None
 
     def record_success(self, buy: float, sell: float, source_updated_at: str | None):
         self.latest_buy = buy
@@ -94,12 +96,43 @@ class PriceCache:
             "allow_buy": True,
             "allow_sell": True,
             "base_price": None,
+            "profit": None,
+            "master_profit": None,
+            "farshad_commission": None,
+            "farshad_spread": None,
             "buy": buy,
             "sell": sell,
+            "related_id": None,
+            "related_diff": None,
             "min": None,
             "max": None,
             "last_update_time": source_updated_at,
         })
+
+    def sync_primary_alias(self, alias_id: int, source_id: int) -> None:
+        """Publish a stable synthetic row that mirrors the live primary tile.
+
+        Farshad renames/activates a different نقدی id every day. Goldapp
+        price cards are pinned to a fixed goldbridge_item_id, so without
+        this alias the app stays on yesterday's inactive id while /price
+        correctly tracks tomorrow's tile.
+        """
+        if alias_id <= 0:
+            return
+        source = self.get_entry(source_id)
+        if not source or source.get("buy") is None or source.get("sell") is None:
+            return
+        alias = dict(source)
+        alias["id"] = alias_id
+        # Keep Farshad's real day-name so the UI shows which delivery day
+        # is live; related_id points at the real Farshad id.
+        alias["related_id"] = source_id
+        alias["active"] = True
+        for i, entry in enumerate(self.entries):
+            if entry.get("id") == alias_id:
+                self.entries[i] = alias
+                return
+        self.entries.append(alias)
 
     def record_failure(self):
         self.consecutive_failures += 1

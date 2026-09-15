@@ -2,9 +2,15 @@
 Background task: polls sekefarshad.ir on a timer, feeds results into
 the shared PriceCache. Exponential backoff with jitter on failure so a
 source outage doesn't turn into a hammering retry loop.
+
+Freshness of the target quote is the priority: every successful tick is
+applied immediately. Full-catalog retries for secondary cards are
+throttled so a 1s poll cadence does not double-hit the upstream API on
+every truncated response.
 """
 import asyncio
 import random
+import time
 
 import httpx
 
@@ -12,9 +18,11 @@ from app.core.config import get_settings
 from app.core.logging import logger
 from app.services.price_cache import cache
 from app.services.session_store import load_session
-from app.services.source_parser import clean_prices, extract_buy_sell
+from app.services.source_parser import active_related_board_cards, clean_prices, extract_buy_sell
+from app.services.target_resolver import resolve_target_price_id, tomorrow_weekday_fa
 
 settings = get_settings()
+_last_logged_target_id: int | None = None
 
 # Prefer a saved login session (from `python login.py`) over the static
 # .env values - lets you switch to real phone+code login without
@@ -26,9 +34,10 @@ SOURCE_UTOKEN = (_session or {}).get("utoken") or settings.source_utoken_env or 
 
 _AUTH_ERROR_KEYWORDS = ["توکن", "token", "session", "نشست", "احراز", "auth", "منقضی", "expired"]
 
-# Upstream intermittently returns a 1-item truncated catalog when polled
-# too aggressively. One quick retry usually recovers the full list.
-_PARTIAL_RETRY_DELAY_SECONDS = 0.35
+# Truncated catalogs are common under load. We still apply them for the
+# primary quote, and only chase a fuller list on this cadence so a 1s
+# poll does not become 2 requests/second forever.
+_FULL_CATALOG_REFRESH_SECONDS = 8.0
 _MIN_HEALTHY_ENTRY_COUNT = 3
 
 
@@ -41,7 +50,80 @@ async def _fetch_payload(client: httpx.AsyncClient) -> dict:
     return resp.json()
 
 
-async def _poll_once(client: httpx.AsyncClient) -> None:
+def _effective_target_id() -> int:
+    """Tomorrow's نقدی tile (default) or the fixed env pin."""
+    return resolve_target_price_id(
+        cache.entries,
+        mode=settings.target_mode,
+        fixed_id=settings.target_price_id,
+    )
+
+
+def _log_target_if_changed(target_id: int) -> None:
+    global _last_logged_target_id
+    if target_id == _last_logged_target_id:
+        return
+    _last_logged_target_id = target_id
+    entry = cache.get_entry(target_id) or {}
+    logger.info(
+        f"[poller] primary target id={target_id} name={entry.get('name')!r} "
+        f"mode={settings.target_mode} tomorrow={tomorrow_weekday_fa()!r}"
+    )
+
+
+def _apply_tick(payload: dict, new_entries: list[dict]) -> bool:
+    """Merge catalog + update primary quote. Returns True if buy/sell changed."""
+    merge_result = cache.record_entries(new_entries)
+    if merge_result == "merged":
+        logger.debug(
+            f"[poller] merged partial catalog (got {len(new_entries)}, "
+            f"kept {len(cache.entries)} total)"
+        )
+    elif merge_result == "empty":
+        logger.warning("[poller] source returned an empty prices list")
+
+    target_id = _effective_target_id()
+    cache.target_price_id = target_id
+    _log_target_if_changed(target_id)
+    _warn_if_target_is_inactive_master(target_id)
+
+    result = extract_buy_sell(payload, target_id)
+    if result is None:
+        # Partial list may omit the target id - fall back to whatever we
+        # already have cached for that id rather than counting a failure.
+        cached = cache.get_entry(target_id)
+        if cached and cached.get("buy") is not None and cached.get("sell") is not None:
+            buy, sell = float(cached["buy"]), float(cached["sell"])
+            cache.record_success(
+                buy, sell, payload.get("lastUpdateTime") or cached.get("last_update_time")
+            )
+            return False
+        logger.warning(f"[poller] couldn't find/parse price id={target_id}")
+        cache.record_failure()
+        return False
+
+    buy, sell = result
+    changed = buy != cache.latest_buy or sell != cache.latest_sell
+    cache.record_success(buy, sell, payload.get("lastUpdateTime"))
+    cache.sync_target_quote(target_id, buy, sell, payload.get("lastUpdateTime"))
+    # Stable id for goldapp cards (does not change when Farshad rolls the
+    # delivery weekday tile from e.g. 1013 → 1009 → 1011).
+    cache.sync_primary_alias(settings.primary_alias_id, target_id)
+    if changed:
+        logger.info(
+            f"[poller] updated: id={target_id} buy={buy} sell={sell} "
+            f"(entries={len(cache.entries)}, tick={len(new_entries)})"
+        )
+    else:
+        logger.debug(
+            f"[poller] unchanged: id={target_id} buy={buy} sell={sell} "
+            f"(entries={len(cache.entries)}, tick={len(new_entries)})"
+        )
+    return changed
+
+
+async def _poll_once(client: httpx.AsyncClient, *, force_full_retry: bool = False) -> bool:
+    """One upstream poll. Returns True if the primary quote changed."""
     payload = await _fetch_payload(client)
 
     if not payload.get("state"):
@@ -54,63 +136,79 @@ async def _poll_once(client: httpx.AsyncClient) -> None:
         else:
             logger.warning(f"[poller] source returned state=false: {msg}")
         cache.record_failure()
-        return
+        return False
 
     new_entries = clean_prices(payload)
-    # Truncated responses (common under rate pressure) - retry once before
-    # merging so /prices stays as complete as possible.
-    if 0 < len(new_entries) < _MIN_HEALTHY_ENTRY_COUNT:
-        logger.info(
-            f"[poller] source returned only {len(new_entries)} entries - "
-            f"retrying once for a full catalog"
-        )
-        await asyncio.sleep(_PARTIAL_RETRY_DELAY_SECONDS)
+
+    # Apply the first response immediately so the target quote never waits
+    # on a full-catalog chase. Secondary completeness is best-effort after.
+    changed = _apply_tick(payload, new_entries)
+
+    # On the slow full-catalog cadence (and on cold start), if this tick
+    # was truncated, try once more for secondary cards so /prices is not
+    # stuck at a single row.
+    if force_full_retry and 0 < len(new_entries) < _MIN_HEALTHY_ENTRY_COUNT:
+        await asyncio.sleep(0.25)
         try:
             retry_payload = await _fetch_payload(client)
             if retry_payload.get("state"):
                 retry_entries = clean_prices(retry_payload)
                 if len(retry_entries) > len(new_entries):
-                    payload = retry_payload
-                    new_entries = retry_entries
+                    logger.info(
+                        f"[poller] full-catalog refresh recovered {len(retry_entries)} entries"
+                    )
+                    if _apply_tick(retry_payload, retry_entries):
+                        changed = True
         except Exception as e:
-            logger.warning(f"[poller] partial-list retry failed: {e}")
+            logger.warning(f"[poller] full-catalog refresh failed: {e}")
 
-    logger.info(f"[poller] source returned {len(new_entries)} price entries")
-    merge_result = cache.record_entries(new_entries)
-    if merge_result == "merged":
-        logger.warning(
-            f"[poller] merged partial catalog into cache "
-            f"(got {len(new_entries)}, kept {len(cache.entries)} total)"
-        )
-    elif merge_result == "empty":
-        logger.warning("[poller] source returned an empty prices list")
+    return changed
 
-    result = extract_buy_sell(payload, settings.target_price_id)
-    if result is None:
-        # Partial list may omit the target id - fall back to whatever we
-        # already have cached for that id rather than counting a failure.
-        cached = cache.get_entry(settings.target_price_id)
-        if cached and cached.get("buy") is not None and cached.get("sell") is not None:
-            buy, sell = float(cached["buy"]), float(cached["sell"])
-            cache.record_success(buy, sell, payload.get("lastUpdateTime") or cached.get("last_update_time"))
-            logger.info(f"[poller] target id missing in this tick - kept cached buy={buy} sell={sell}")
-            return
-        logger.warning(f"[poller] couldn't find/parse price id={settings.target_price_id}")
-        cache.record_failure()
+
+_warned_inactive_master = False
+
+
+def _warn_if_target_is_inactive_master(target_id: int) -> None:
+    """Once per process: id=1-style masters are not the Farshad /trade tiles."""
+    global _warned_inactive_master
+    if _warned_inactive_master:
         return
+    target = cache.get_entry(target_id)
+    if not target:
+        return
+    if target.get("active"):
+        return
+    related = active_related_board_cards(cache.entries, target_id)
+    if not related:
+        return
+    _warned_inactive_master = True
+    tiles = ", ".join(
+        f"id={e.get('id')} {e.get('name')} (profit={e.get('profit')})"
+        for e in related
+    )
+    logger.warning(
+        f"[poller] target id={target_id} ({target.get('name')}) is inactive "
+        f"on Farshad. The /trade board shows the related نقدی cards instead: "
+        f"{tiles}. Prefer BRIDGE_TARGET_MODE=tomorrow (auto نقدی) or "
+        f"GET /price?id=<board id> / BRIDGE_TARGET_MODE=fixed with that id."
+    )
 
-    buy, sell = result
-    cache.record_success(buy, sell, payload.get("lastUpdateTime"))
-    cache.sync_target_quote(settings.target_price_id, buy, sell, payload.get("lastUpdateTime"))
-    logger.info(f"[poller] updated: buy={buy} sell={sell}")
 
-
-def _backoff_seconds() -> float:
+def _backoff_seconds(base_interval: float) -> float:
     if cache.consecutive_failures == 0:
-        return settings.poll_seconds
-    raw = settings.poll_seconds * (2 ** min(cache.consecutive_failures, 6))
+        return base_interval
+    raw = base_interval * (2 ** min(cache.consecutive_failures, 6))
     capped = min(settings.max_backoff_seconds, raw)
     return capped * (0.8 + 0.4 * random.random())  # +/-20% jitter
+
+
+def _interval_after_tick(*, changed: bool, fast_until: float, now: float) -> tuple[float, float]:
+    """Pick next sleep base; briefly go faster right after a price move."""
+    if changed:
+        fast_until = now + settings.poll_fast_window_seconds
+    if now < fast_until:
+        return min(settings.poll_seconds, settings.poll_fast_seconds), fast_until
+    return settings.poll_seconds, fast_until
 
 
 async def poll_loop() -> None:
@@ -122,10 +220,22 @@ async def poll_loop() -> None:
             "polling the public prices list without auth"
         )
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    last_full_refresh = 0.0
+    fast_until = 0.0
+    # Fail hung connects quickly; keep enough read budget for the source.
+    timeout = httpx.Timeout(connect=2.0, read=5.0, write=5.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         while True:
+            started = time.monotonic()
+            force_full = (started - last_full_refresh) >= _FULL_CATALOG_REFRESH_SECONDS
+            # Cold start: also chase a full list until the cache looks healthy.
+            if len(cache.entries) < _MIN_HEALTHY_ENTRY_COUNT:
+                force_full = True
+            changed = False
             try:
-                await _poll_once(client)
+                changed = await _poll_once(client, force_full_retry=force_full)
+                if force_full:
+                    last_full_refresh = time.monotonic()
             except Exception as e:
                 # Deliberately never logs SOURCE_UID/SOURCE_UTOKEN, even on
                 # error - keep it that way in any future edits here.
@@ -137,4 +247,11 @@ async def poll_loop() -> None:
                         f"marking cached prices as stale"
                     )
 
-            await asyncio.sleep(_backoff_seconds())
+            now = time.monotonic()
+            base_interval, fast_until = _interval_after_tick(
+                changed=changed, fast_until=fast_until, now=now
+            )
+            # Account for request time so the effective interval stays
+            # close to the chosen poll period instead of (poll + RTT).
+            elapsed = now - started
+            await asyncio.sleep(max(0.0, _backoff_seconds(base_interval) - elapsed))
