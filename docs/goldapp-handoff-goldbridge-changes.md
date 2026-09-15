@@ -8,6 +8,11 @@ fields and stop assuming old behavior.
 **Branch deployed:** `cursor/match-farshad-screen-price-0329`  
 **Auth:** `Authorization: Bearer <BRIDGE_API_KEY>` (same key as today)
 
+**Updating goldapp price cards (main cash / mirrors):** see
+[`docs/goldapp-price-cards-update.md`](./goldapp-price-cards-update.md).
+Main cash must use stable goldbridge id **`900000`**, not Farshad weekday ids
+(`1013`, `1009`, `1011`, …).
+
 ---
 
 ## 1. What was wrong before
