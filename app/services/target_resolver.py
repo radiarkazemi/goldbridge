@@ -115,15 +115,19 @@ def resolve_tomorrow_naqd_id(
     best: tuple[int, int] | None = None
     best_id: int | None = None
     for entry in entries:
+        try:
+            eid = int(entry.get("id"))
+        except (TypeError, ValueError):
+            continue
+        # Skip goldbridge synthetic rows (primary alias / app-only ids).
+        if eid >= 900000:
+            continue
         scored = _score_candidate(entry, weekday)
         if scored is None:
             continue
         if best is None or scored > best:
             best = scored
-            try:
-                best_id = int(entry["id"])
-            except (KeyError, TypeError, ValueError):
-                best_id = None
+            best_id = eid
     if best_id is not None:
         return best_id
     return fallback_id

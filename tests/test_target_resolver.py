@@ -124,6 +124,27 @@ class TomorrowNaqdResolverTests(unittest.TestCase):
             1009,
         )
 
+    def test_ignores_synthetic_primary_alias(self):
+        now = datetime(2026, 9, 15, 11, 0, tzinfo=_TEHRAN)  # Tue → Wed
+        entries = list(self.entries) + [
+            {
+                "id": 1011,
+                "name": "نقدی چهارشنبه",
+                "active": True,
+                "buy": 100.0,
+                "sell": 90.0,
+            },
+            {
+                "id": 900000,
+                "name": "نقدی چهارشنبه",
+                "active": True,
+                "buy": 1.0,
+                "sell": 1.0,
+            },
+        ]
+        # Without the ignore, 900000 would win on tie-break (higher id).
+        self.assertEqual(resolve_tomorrow_naqd_id(entries, now=now), 1011)
+
 
 if __name__ == "__main__":
     unittest.main()
